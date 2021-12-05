@@ -2975,7 +2975,8 @@ void qemu_init(int argc, char **argv, char **envp)
     fake_argv[fake_argc++] = strdup("-drive");
     char *escaped_dvd_path = strdup_double_commas(dvd_path);
     fake_argv[fake_argc++] = g_strdup_printf("index=1,media=cdrom,file=%s,throttling.bps-total=%d",
-        escaped_dvd_path, dvd_drive_speed);
+        escaped_dvd_path,
+        dvd_drive_speed);
     free(escaped_dvd_path);
 
     fake_argv[fake_argc++] = strdup("-display");
