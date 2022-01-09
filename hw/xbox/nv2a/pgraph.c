@@ -2479,14 +2479,18 @@ DEF_METHOD(NV097, SET_BEGIN_END)
         pg->regs[NV_PGRAPH_CONTROL_0] & NV_PGRAPH_CONTROL_0_ZENABLE;
     bool stencil_test =
         pg->regs[NV_PGRAPH_CONTROL_1] & NV_PGRAPH_CONTROL_1_STENCIL_TEST_ENABLE;
+    bool should_draw = pgraph_color_write_enabled(pg) || depth_test || stencil_test;
 
     if (parameter == NV097_SET_BEGIN_END_OP_END) {
 
         nv2a_profile_inc_counter(NV2A_PROF_BEGIN_ENDS);
 
         assert(pg->shader_binding);
+        assert(!should_draw || pg->color_binding || pg->zeta_binding);
 
-        if (pg->draw_arrays_length) {
+        if(!should_draw) {
+            NV2A_DPRINTF("No buffers to draw to, skipping\n");
+        } else if (pg->draw_arrays_length) {
             nv2a_profile_inc_counter(NV2A_PROF_DRAW_ARRAYS);
 
             NV2A_GL_DPRINTF(false, "Draw Arrays");
@@ -2606,7 +2610,7 @@ DEF_METHOD(NV097, SET_BEGIN_END)
         assert(parameter <= NV097_SET_BEGIN_END_OP_POLYGON);
 
         pgraph_update_surface(d, true, true, depth_test || stencil_test);
-        assert(pg->color_binding || pg->zeta_binding);
+        assert(!should_draw || pg->color_binding || pg->zeta_binding);
 
         pg->primitive_mode = parameter;
         pgraph_bind_textures(d);
