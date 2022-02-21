@@ -40,7 +40,7 @@
 //#define DEBUG_NV2A_SUPPRESS_IRQ_AND_DMA_MESSAGES
 
 // Enable debugger functionality within xemu.
-//#define ENABLE_NV2A_DEBUGGER
+#define ENABLE_NV2A_DEBUGGER
 
 // #define DEBUG_NV2A_GL
 #ifdef DEBUG_NV2A_GL

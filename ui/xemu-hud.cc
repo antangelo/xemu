@@ -2112,6 +2112,14 @@ static void process_keyboard_shortcuts(void)
         monitor_window.toggle_open();
     }
 
+    if (is_key_pressed(SDL_SCANCODE_PERIOD)) {
+        nv2a_dbg_step_frame();
+    }
+
+    if (is_key_pressed(SDL_SCANCODE_COMMA)) {
+        nv2a_dbg_continue();
+    }
+
 #if defined(DEBUG_NV2A_GL) && defined(CONFIG_RENDERDOC)
     if (is_key_pressed(SDL_SCANCODE_F10)) {
         nv2a_dbg_renderdoc_capture_frames(1);

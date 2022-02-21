@@ -313,45 +313,45 @@ void nv2a_dbg_handle_generate_texture(GLuint texture,
                                       GLenum format,
                                       GLenum type)
 {
-    NV2ADebuggerTextureState* info = g_texture_info;
-    for (uint32_t i = 0; i < MAX_TEXTURE_INFOS; ++i, ++info) {
-        if (info->texture && info->texture != texture) {
-            continue;
-        }
+    // NV2ADebuggerTextureState* info = g_texture_info;
+    // for (uint32_t i = 0; i < MAX_TEXTURE_INFOS; ++i, ++info) {
+    //     if (info->texture && info->texture != texture) {
+    //         continue;
+    //     }
 
-        info->texture = texture;
-        info->internal_format = internal_format;
-        info->width = (GLint)width;
-        info->height = (GLint)height;
-        info->format = format;
-        info->type = type;
-        return;
-    }
+    //     info->texture = texture;
+    //     info->internal_format = internal_format;
+    //     info->width = (GLint)width;
+    //     info->height = (GLint)height;
+    //     info->format = format;
+    //     info->type = type;
+    //     return;
+    // }
 
-    printf("nv2a_dbg_handle_generate_texture: ran out of info slots.\n");
+    // printf("nv2a_dbg_handle_generate_texture: ran out of info slots.\n");
 }
 
 void nv2a_dbg_handle_delete_texture(GLuint texture)
 {
-    NV2ADebuggerTextureState* info = g_texture_info;
-    for (uint32_t i = 0; i < MAX_TEXTURE_INFOS; ++i, ++info) {
-        if (info->texture == texture) {
-            info->texture = 0;
-            return;
-        }
-    }
+    // NV2ADebuggerTextureState* info = g_texture_info;
+    // for (uint32_t i = 0; i < MAX_TEXTURE_INFOS; ++i, ++info) {
+    //     if (info->texture == texture) {
+    //         info->texture = 0;
+    //         return;
+    //     }
+    // }
 
-    printf("nv2a_dbg_handle_delete_texture: failed to delete texture info.\n");
+    // printf("nv2a_dbg_handle_delete_texture: failed to delete texture info.\n");
 }
 
 static NV2ADebuggerTextureState* find_texture_info(GLuint texture)
 {
-    NV2ADebuggerTextureState* info = g_texture_info;
-    for (uint32_t i = 0; i < MAX_TEXTURE_INFOS; ++i, ++info) {
-        if (info->texture == texture) {
-            return info;
-        }
-    }
+    // NV2ADebuggerTextureState* info = g_texture_info;
+    // for (uint32_t i = 0; i < MAX_TEXTURE_INFOS; ++i, ++info) {
+    //     if (info->texture == texture) {
+    //         return info;
+    //     }
+    // }
     return NULL;
 }
 
