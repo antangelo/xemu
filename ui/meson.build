@@ -49,6 +49,7 @@ xemu_ss.add(files(
   'xemu-net.c',
   'xemu-settings.cc',
   'xemu-shaders.c',
+  'xemu-snapshots.c',
   'xemu-hud.cc',
   'xemu-reporting.cc',
 ))

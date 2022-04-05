@@ -30,6 +30,7 @@
 #include "xemu-notifications.h"
 #include "xemu-settings.h"
 #include "xemu-shaders.h"
+#include "xemu-snapshots.h"
 #include "xemu-custom-widgets.h"
 #include "xemu-monitor.h"
 #include "xemu-version.h"
@@ -55,8 +56,10 @@ extern "C" {
 // Include necessary QEMU headers
 #include "qemu/osdep.h"
 #include "qemu-common.h"
+#include "qapi/error.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/runstate.h"
+#include "migration/snapshot.h"
 #include "hw/xbox/mcpx/apu_debug.h"
 #include "hw/xbox/nv2a/debug.h"
 #include "hw/xbox/nv2a/nv2a.h"
@@ -826,6 +829,132 @@ const char *xemu_get_cpu_info(void)
     // FIXME: Support other architectures (e.g. ARM)
     return cpu_info;
 }
+
+class SaveStateWindow
+{
+private:
+    QEMUSnapshotInfo *snapshots;
+    char *fn_key_bindings[8];
+    int snapshots_len, selected_snapshot;
+
+public:
+    bool is_open, reload;
+
+    void Load()
+    {
+        if (snapshots) {
+            g_free(snapshots);
+        }
+
+        snapshots_len = xemu_list_snapshots(&snapshots);
+
+        if (selected_snapshot >= snapshots_len) {
+            selected_snapshot = snapshots_len - 1;
+        }
+    }
+
+    SaveStateWindow()
+    {
+        is_open = false;
+        selected_snapshot = -1;
+
+        char buf[10];
+        for (size_t i = 0; i < 8; ++i) {
+            snprintf(buf, sizeof(buf), "save%ld", i);
+            fn_key_bindings[i] = g_strdup(buf);
+        }
+    }
+
+    ~SaveStateWindow()
+    {
+        if (snapshots) {
+            g_free(snapshots);
+        }
+
+        for (size_t i = 0; i < 8; ++i) {
+            g_free(fn_key_bindings[i]);
+        }
+    }
+
+    bool BindFnKey(size_t fn_key)
+    {
+        assert(fn_key < 8);
+        if (!is_open) return false;
+        if (selected_snapshot < 0) return true;
+
+        g_free(fn_key_bindings[fn_key]);
+        fn_key_bindings[fn_key] = g_strdup(snapshots[selected_snapshot].name);
+        return true;
+    }
+
+    char *GetFnKeyBinding(size_t fn_key)
+    {
+        assert(fn_key < 8);
+        return fn_key_bindings[fn_key];
+    }
+
+    void Draw()
+    {
+        if (!is_open) return;
+
+        ImGui::SetNextWindowContentSize(ImVec2(400.0f*g_ui_scale, 0.0f));
+        if (!ImGui::Begin("Save States", &is_open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
+        {
+            ImGui::End();
+            return;
+        }
+
+        Load();
+
+        auto cursorY = ImGui::GetCursorPosY();
+        ImGui::ListBoxHeader("##SnapshotsListBox", ImVec2(ImGui::GetWindowWidth() - 150.0f*g_ui_scale, 0.0f));
+        for (int i = 0; i < snapshots_len; ++i) {
+            char id[14];
+            snprintf(id, sizeof(id), "##sn%d", i);
+
+            ImVec2 text_size = ImGui::CalcTextSize(id, NULL, true);
+            ImVec2 cursor = ImGui::GetCursorPos();
+            if (ImGui::Selectable(id, i == selected_snapshot, 0, ImVec2(0, text_size.y * 2))) {
+                selected_snapshot = i;
+            }
+
+            ImGui::SetCursorPos(cursor);
+            ImGui::Text(snapshots[i].name);
+
+            for (size_t fkey = 0; fkey < 8; ++fkey) {
+                if (strcmp(fn_key_bindings[fkey], snapshots[i].name) == 0) {
+                    ImGui::SameLine();
+                    ImGui::Text(" (F%d)", fkey + 1);
+                }
+            }
+
+            g_autoptr(GDateTime) date = g_date_time_new_from_unix_local(snapshots[i].date_sec);
+            char *date_buf = g_date_time_format(date, "%Y-%m-%d %H:%M:%S");
+            ImGui::SetCursorPos(ImVec2(cursor.x, cursor.y + text_size.y));
+            ImGui::Text(date_buf);
+            g_free(date_buf);
+        }
+        ImGui::ListBoxFooter();
+
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 130.0f * g_ui_scale, cursorY));
+        
+        if (ImGui::Button("Load State", ImVec2(120*g_ui_scale, 0)) && selected_snapshot >= 0) {
+            xemu_load_snapshot(snapshots[selected_snapshot].name);
+        }
+
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 130.0f * g_ui_scale);
+        if (ImGui::Button("Save State", ImVec2(120*g_ui_scale, 0)) && selected_snapshot >= 0) {
+            xemu_save_snapshot(snapshots[selected_snapshot].name);
+        }
+        
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 130.0f * g_ui_scale);
+        if (ImGui::Button("Delete State", ImVec2(120*g_ui_scale, 0)) && selected_snapshot >= 0) {
+            xemu_del_snapshot(snapshots[selected_snapshot].name);
+        }
+
+        ImGui::End();
+    }
+};
 
 class AboutWindow
 {
@@ -1797,6 +1926,7 @@ static DebugApuWindow apu_window;
 static DebugVideoWindow video_window;
 static InputWindow input_window;
 static NetworkWindow network_window;
+static SaveStateWindow save_state_window;
 static AboutWindow about_window;
 static SettingsWindow settings_window;
 static CompatibilityReporter compatibility_reporter_window;
@@ -1897,6 +2027,12 @@ static bool is_shortcut_key_pressed(int scancode)
     return is_shortcut_key && io.KeysDown[scancode] && (io.KeysDownDuration[scancode] == 0.0);
 }
 
+static bool is_mod_key_down(void)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    return io.KeyShift && !io.KeyCtrl && !io.KeySuper && !io.KeyAlt;
+}
+
 static void action_eject_disc(void)
 {
     xemu_settings_set_string(&g_config.sys.files.dvd_path, "");
@@ -1967,6 +2103,22 @@ static void process_keyboard_shortcuts(void)
         monitor_window.toggle_open();
     }
 
+    for (size_t fkey = 0; fkey < 8; fkey++) {
+        if (is_key_pressed(SDL_SCANCODE_F1 + fkey)) {
+            if (save_state_window.BindFnKey(fkey)) {
+                continue;
+            }
+
+            char *vm_name = save_state_window.GetFnKeyBinding(fkey);
+
+            if (is_mod_key_down()) {
+                xemu_save_snapshot(vm_name);
+            } else {
+                xemu_load_snapshot(vm_name);
+            }
+        }
+    }
+
 #if defined(DEBUG_NV2A_GL) && defined(CONFIG_RENDERDOC)
     if (is_key_pressed(SDL_SCANCODE_F10)) {
         nv2a_dbg_renderdoc_capture_frames(1);
@@ -1997,9 +2149,10 @@ static void ShowMainMenu()
 
             ImGui::Separator();
 
-            ImGui::MenuItem("Input",    NULL, &input_window.is_open);
-            ImGui::MenuItem("Network",  NULL, &network_window.is_open);
-            ImGui::MenuItem("Settings", NULL, &settings_window.is_open);
+            ImGui::MenuItem("Input",       NULL, &input_window.is_open);
+            ImGui::MenuItem("Network",     NULL, &network_window.is_open);
+            ImGui::MenuItem("Save States", NULL, &save_state_window.is_open);
+            ImGui::MenuItem("Settings",    NULL, &settings_window.is_open);
 
             ImGui::Separator();
 
@@ -2369,6 +2522,7 @@ void xemu_hud_render(void)
     monitor_window.Draw();
     apu_window.Draw();
     video_window.Draw();
+    save_state_window.Draw();
     about_window.Draw();
     network_window.Draw();
     compatibility_reporter_window.Draw();
