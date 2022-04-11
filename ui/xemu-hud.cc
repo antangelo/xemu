@@ -830,33 +830,64 @@ const char *xemu_get_cpu_info(void)
     return cpu_info;
 }
 
-class SaveStateWindow
+class SnapshotWindow
 {
 private:
     QEMUSnapshotInfo *snapshots;
+    XemuSnapshotData *extra_data;
     char *fn_key_bindings[8];
-    int snapshots_len, selected_snapshot;
+    char *current_title_name;
+    uint32_t current_title_id;
+    int snapshots_len, selected_snapshot, prev_snapshots_len;
+    GLuint *thumbnail_tex;
 
 public:
-    bool is_open, reload;
+    bool is_open;
+    GRegex *search_regex;
+    char search_buf[40];
 
     void Load()
     {
-        if (snapshots) {
-            g_free(snapshots);
+        Error *err = NULL;
+
+        snapshots_len = xemu_snapshots_list(&snapshots, &extra_data, &err);
+        if (err) {
+            error_reportf_err(err, "failed to list snapshots ");
+            snapshots_len = 0;
         }
 
-        snapshots_len = xemu_list_snapshots(&snapshots);
+        if (prev_snapshots_len != snapshots_len) {
+            if (prev_snapshots_len > 0) {
+                glDeleteTextures(prev_snapshots_len, thumbnail_tex);
+                g_free(thumbnail_tex);
+            }
+
+            thumbnail_tex = (GLuint*) g_malloc(snapshots_len * sizeof(GLuint));
+            glGenTextures(snapshots_len, thumbnail_tex);
+        }
+
+        prev_snapshots_len = snapshots_len;
 
         if (selected_snapshot >= snapshots_len) {
-            selected_snapshot = snapshots_len - 1;
+            selected_snapshot = -1;
+        }
+
+        struct xbe *xbe = xemu_get_xbe_info();
+        if (xbe && xbe->cert->m_titleid != current_title_id) {
+            g_free(current_title_name);
+            current_title_name = g_utf16_to_utf8(xbe->cert->m_title_name, 40, NULL, NULL, NULL);
+            current_title_id = xbe->cert->m_titleid;
         }
     }
 
-    SaveStateWindow()
+    SnapshotWindow()
     {
         is_open = false;
         selected_snapshot = -1;
+        prev_snapshots_len = 0;
+        xemu_snapshots_mark_dirty();
+
+        search_regex = NULL;
 
         char buf[10];
         for (size_t i = 0; i < 8; ++i) {
@@ -865,40 +896,168 @@ public:
         }
     }
 
-    ~SaveStateWindow()
+    ~SnapshotWindow()
     {
-        if (snapshots) {
-            g_free(snapshots);
-        }
+        g_free(snapshots);
+        g_free(extra_data);
+        xemu_snapshots_mark_dirty();
+
+        g_free(current_title_name);
+        g_free(search_regex);
 
         for (size_t i = 0; i < 8; ++i) {
             g_free(fn_key_bindings[i]);
         }
     }
 
-    bool BindFnKey(size_t fn_key)
+    bool BindFnKey(size_t fn_key, bool unbind)
     {
         assert(fn_key < 8);
         if (!is_open) return false;
         if (selected_snapshot < 0) return true;
+        char buf[10];
+
+        if (unbind) {
+            snprintf(buf, sizeof(buf), "save%ld", fn_key);
+            g_free(fn_key_bindings[fn_key]);
+            fn_key_bindings[fn_key] = g_strdup(buf);
+            return true;
+        }
 
         g_free(fn_key_bindings[fn_key]);
         fn_key_bindings[fn_key] = g_strdup(snapshots[selected_snapshot].name);
+
+        for (size_t i = 0; i < 8; ++i) {
+            if (i == fn_key) continue;
+            if (strcmp(fn_key_bindings[i], fn_key_bindings[fn_key]) == 0) {
+                snprintf(buf, sizeof(buf), "save%ld", i);
+                g_free(fn_key_bindings[i]);
+                fn_key_bindings[i] = g_strdup(buf);
+            }
+        }
+
         return true;
     }
 
     char *GetFnKeyBinding(size_t fn_key)
     {
         assert(fn_key < 8);
+
+        /* Prevent loading of filtered snapshots by fn key */
+        for (int i = 0; i < snapshots_len; ++i) {
+            if (extra_data[i].xbe_title_present && 
+                strcmp(current_title_name, extra_data[i].xbe_title) != 0 &&
+                strcmp(fn_key_bindings[fn_key], snapshots[i].name) == 0
+                ) {
+                return NULL;
+            }
+        }
+
         return fn_key_bindings[fn_key];
     }
+
+    void DrawSnapshotEntry(int i, float width)
+    {
+        Error *err = NULL;
+        char id[14];
+        snprintf(id, sizeof(id), "##sn%d", i);
+
+        ImVec2 text_size = ImGui::CalcTextSize(id, NULL, true);
+        ImVec2 cursor = ImGui::GetCursorPos();
+        ImVec2 text_cursor = ImGui::GetCursorPos();
+        text_cursor.x += text_size.y * 4 + 2;
+        if (ImGui::Selectable(id, i == selected_snapshot, 0, ImVec2(0, text_size.y * 4))) {
+            if (selected_snapshot == i) {
+                xemu_snapshots_load(snapshots[i].name, &err);
+                if (err) {
+                    error_reportf_err(err, "loadvm: ");
+                }
+            }
+            selected_snapshot = i;
+        }
+
+        if (extra_data[i].thumbnail_present) {
+            ImGui::SetCursorPos(cursor);
+            xemu_snapshots_render_thumbnail(thumbnail_tex[i], &extra_data[i].thumbnail);
+            ImGui::Image((void*)(intptr_t)(thumbnail_tex[i]), ImVec2(4 * text_size.y, 4 * text_size.y));
+        }
+
+        ImGui::SetCursorPos(text_cursor);
+        ImGui::Text(snapshots[i].name);
+
+        for (size_t fkey = 0; fkey < 8; ++fkey) {
+            if (strcmp(fn_key_bindings[fkey], snapshots[i].name) == 0) {
+                ImGui::SameLine();
+                ImGui::Text("(F%d)", fkey + 1);
+            }
+        }
+
+        g_autoptr(GDateTime) date = g_date_time_new_from_unix_local(snapshots[i].date_sec);
+        char *date_buf = g_date_time_format(date, "%Y-%m-%d %H:%M:%S");
+        ImGui::SetCursorPos(ImVec2(text_cursor.x, text_cursor.y + text_size.y));
+        ImGui::Text(date_buf);
+        g_free(date_buf);
+
+        ImGui::SetCursorPos(ImVec2(text_cursor.x, text_cursor.y + 2 * text_size.y));
+        if (extra_data[i].xbe_title_present) {
+            ImGui::Text(extra_data[i].xbe_title);
+        } else {
+            ImGui::Text("Unknown");
+        }
+
+        ImGui::SetCursorPos(ImVec2(text_cursor.x, text_cursor.y + 3 * text_size.y));
+        ImGui::Dummy(ImVec2(0, 1 * text_size.y));
+    }
+
+    void DrawSideBar(float width, float height, float top_cursor)
+    {
+        Error *err = NULL;
+        ImGui::SetCursorPos(ImVec2(0.8*width + 5.0f*g_ui_scale, top_cursor));
+
+        auto thumbnail_width = width * 0.2 - 4*g_ui_scale;
+        if (selected_snapshot >= 0 && extra_data[selected_snapshot].thumbnail_present) {
+            auto thumbnail_height = thumbnail_width * (float)extra_data[selected_snapshot].thumbnail.height 
+                                    / (float)extra_data[selected_snapshot].thumbnail.width;
+            xemu_snapshots_render_thumbnail(thumbnail_tex[selected_snapshot], &extra_data[selected_snapshot].thumbnail);
+            ImGui::Image((void*)(intptr_t)(thumbnail_tex[selected_snapshot]), ImVec2(thumbnail_width, thumbnail_height));
+        } else {
+            ImGui::Dummy(ImVec2(thumbnail_width, thumbnail_width*0.75));
+        }
+
+        ImGui::SetCursorPosX(0.8*width + 5.0f*g_ui_scale);
+        
+        if (ImGui::Button("Load", ImVec2(80*g_ui_scale, 0)) && selected_snapshot >= 0) {
+            xemu_snapshots_load(snapshots[selected_snapshot].name, &err);
+            if (err) {
+                error_reportf_err(err, "loadvm: ");
+            }
+        }
+
+        ImGui::SetCursorPosX(0.8*width + 5.0f*g_ui_scale);
+        if (ImGui::Button("Save", ImVec2(80*g_ui_scale, 0)) && selected_snapshot >= 0) {
+            xemu_snapshots_save(snapshots[selected_snapshot].name, &err);
+            if (err) {
+                error_reportf_err(err, "savevm: ");
+            }
+        }
+        
+        ImGui::SetCursorPosX(0.8*width + 5.0f*g_ui_scale);
+        if (ImGui::Button("Delete", ImVec2(80*g_ui_scale, 0)) && selected_snapshot >= 0) {
+            xemu_snapshots_delete(snapshots[selected_snapshot].name, &err);
+            if (err) {
+                error_reportf_err(err, "delvm: ");
+            }
+        }
+    }
+
+    void DrawTopBar(float width);
 
     void Draw()
     {
         if (!is_open) return;
 
-        ImGui::SetNextWindowContentSize(ImVec2(400.0f*g_ui_scale, 0.0f));
-        if (!ImGui::Begin("Save States", &is_open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize))
+        ImGui::SetNextWindowContentSize(ImVec2(600.0f*g_ui_scale, 400.0f*g_ui_scale));
+        if (!ImGui::Begin("Snapshots", &is_open, ImGuiWindowFlags_NoCollapse | 0))
         {
             ImGui::End();
             return;
@@ -906,55 +1065,102 @@ public:
 
         Load();
 
-        auto cursorY = ImGui::GetCursorPosY();
-        ImGui::ListBoxHeader("##SnapshotsListBox", ImVec2(ImGui::GetWindowWidth() - 150.0f*g_ui_scale, 0.0f));
+        // auto top_cursor = ImGui::GetCursorPosY();
+        auto width = ImGui::GetWindowWidth() - 10.0f*g_ui_scale;
+        auto height = ImGui::GetWindowHeight();
+
+        DrawTopBar(width);
+
+        ImGui::ListBoxHeader("##SnapshotsListBox", ImVec2(width, height - ImGui::GetCursorPosY() - 10.0f*g_ui_scale));
+        //ImGui::ListBoxHeader("##SnapshotsListBox", ImVec2(0.8 * width, height - 50.0f*g_ui_scale));
         for (int i = 0; i < snapshots_len; ++i) {
-            char id[14];
-            snprintf(id, sizeof(id), "##sn%d", i);
-
-            ImVec2 text_size = ImGui::CalcTextSize(id, NULL, true);
-            ImVec2 cursor = ImGui::GetCursorPos();
-            if (ImGui::Selectable(id, i == selected_snapshot, 0, ImVec2(0, text_size.y * 2))) {
-                selected_snapshot = i;
-            }
-
-            ImGui::SetCursorPos(cursor);
-            ImGui::Text(snapshots[i].name);
-
-            for (size_t fkey = 0; fkey < 8; ++fkey) {
-                if (strcmp(fn_key_bindings[fkey], snapshots[i].name) == 0) {
-                    ImGui::SameLine();
-                    ImGui::Text(" (F%d)", fkey + 1);
+            if (extra_data[i].xbe_title_present) {
+                if (strcmp(current_title_name, extra_data[i].xbe_title) != 0) {
+                    continue;
                 }
             }
 
-            g_autoptr(GDateTime) date = g_date_time_new_from_unix_local(snapshots[i].date_sec);
-            char *date_buf = g_date_time_format(date, "%Y-%m-%d %H:%M:%S");
-            ImGui::SetCursorPos(ImVec2(cursor.x, cursor.y + text_size.y));
-            ImGui::Text(date_buf);
-            g_free(date_buf);
+            if (search_regex) {
+                GMatchInfo *match;
+                g_regex_match(search_regex, snapshots[i].name, (GRegexMatchFlags)0, &match);
+                if (!g_match_info_matches(match)) {
+                    g_free(match);
+                    continue;
+                }
+
+                g_free(match);
+            }
+
+
+            DrawSnapshotEntry(i, width);
         }
         ImGui::ListBoxFooter();
 
-        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - 130.0f * g_ui_scale, cursorY));
-        
-        if (ImGui::Button("Load State", ImVec2(120*g_ui_scale, 0)) && selected_snapshot >= 0) {
-            xemu_load_snapshot(snapshots[selected_snapshot].name);
-        }
-
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 130.0f * g_ui_scale);
-        if (ImGui::Button("Save State", ImVec2(120*g_ui_scale, 0)) && selected_snapshot >= 0) {
-            xemu_save_snapshot(snapshots[selected_snapshot].name);
-        }
-        
-        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - 130.0f * g_ui_scale);
-        if (ImGui::Button("Delete State", ImVec2(120*g_ui_scale, 0)) && selected_snapshot >= 0) {
-            xemu_del_snapshot(snapshots[selected_snapshot].name);
-        }
+        //DrawSideBar(width, height, top_cursor);
 
         ImGui::End();
     }
 };
+
+static int SnapshotWindowUpdateSearchBox(ImGuiInputTextCallbackData *data)
+{
+    GError *gerr = NULL;
+    SnapshotWindow *win = (SnapshotWindow*)data->UserData;
+    if (strcmp(win->search_buf, data->Buf) != 0) {
+        strcpy(win->search_buf, data->Buf);
+        if (win->search_regex) g_free(win->search_regex);
+        if (data->BufTextLen == 0) {
+            win->search_regex = NULL;
+            return 0;
+        }
+
+        char buf[48];
+        snprintf(buf, 48, "(.*)%s(.*)", data->Buf);
+
+        win->search_regex = g_regex_new(buf, (GRegexCompileFlags)0, (GRegexMatchFlags)0, &gerr);
+        if (gerr) {
+            win->search_regex = NULL;
+            return 1;
+        } 
+    }
+
+    return 0;
+}
+
+void SnapshotWindow::DrawTopBar(float width)
+{
+    Error *err = NULL;
+    auto top_cursor = ImGui::GetCursorPos();
+    auto button_width = 80.0f*g_ui_scale;
+    char input_buf[40];
+
+    ImGui::InputText("Search", input_buf, 40, ImGuiInputTextFlags_CallbackEdit, &SnapshotWindowUpdateSearchBox, this);
+
+    if (ImGui::Button("Load", ImVec2(button_width, 25*g_ui_scale)) && selected_snapshot >= 0) {
+        xemu_snapshots_load(snapshots[selected_snapshot].name, &err);
+        if (err) {
+            error_reportf_err(err, "loadvm: ");
+        }
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Save", ImVec2(button_width, 25*g_ui_scale)) && selected_snapshot >= 0) {
+        xemu_snapshots_save(snapshots[selected_snapshot].name, &err);
+        if (err) {
+            error_reportf_err(err, "savevm: ");
+        }
+    }
+    
+    ImGui::SameLine();
+    if (ImGui::Button("Delete", ImVec2(button_width, 25*g_ui_scale)) && selected_snapshot >= 0) {
+        xemu_snapshots_delete(snapshots[selected_snapshot].name, &err);
+        if (err) {
+            error_reportf_err(err, "delvm: ");
+        }
+    }
+
+    ImGui::SetCursorPosX(top_cursor.x);
+}
 
 class AboutWindow
 {
@@ -1926,7 +2132,7 @@ static DebugApuWindow apu_window;
 static DebugVideoWindow video_window;
 static InputWindow input_window;
 static NetworkWindow network_window;
-static SaveStateWindow save_state_window;
+static SnapshotWindow save_state_window;
 static AboutWindow about_window;
 static SettingsWindow settings_window;
 static CompatibilityReporter compatibility_reporter_window;
@@ -2105,16 +2311,22 @@ static void process_keyboard_shortcuts(void)
 
     for (size_t fkey = 0; fkey < 8; fkey++) {
         if (is_key_pressed(SDL_SCANCODE_F1 + fkey)) {
-            if (save_state_window.BindFnKey(fkey)) {
+            if (save_state_window.BindFnKey(fkey, is_mod_key_down())) {
                 continue;
             }
 
             char *vm_name = save_state_window.GetFnKeyBinding(fkey);
+            if (!vm_name) continue;
 
+            Error *err = NULL;
             if (is_mod_key_down()) {
-                xemu_save_snapshot(vm_name);
+                xemu_snapshots_save(vm_name, &err);
             } else {
-                xemu_load_snapshot(vm_name);
+                xemu_snapshots_load(vm_name, &err);
+            }
+
+            if (err) {
+                error_reportf_err(err, "snapshot: ");
             }
         }
     }
@@ -2149,10 +2361,10 @@ static void ShowMainMenu()
 
             ImGui::Separator();
 
-            ImGui::MenuItem("Input",       NULL, &input_window.is_open);
-            ImGui::MenuItem("Network",     NULL, &network_window.is_open);
-            ImGui::MenuItem("Save States", NULL, &save_state_window.is_open);
-            ImGui::MenuItem("Settings",    NULL, &settings_window.is_open);
+            ImGui::MenuItem("Input",     NULL, &input_window.is_open);
+            ImGui::MenuItem("Network",   NULL, &network_window.is_open);
+            ImGui::MenuItem("Snapshots", NULL, &save_state_window.is_open);
+            ImGui::MenuItem("Settings",  NULL, &settings_window.is_open);
 
             ImGui::Separator();
 

@@ -26,11 +26,44 @@ extern "C" {
 
 #include "qemu/osdep.h"
 #include "block/snapshot.h"
+#include "hw/xbox/nv2a/nv2a.h"
 
-int xemu_list_snapshots(QEMUSnapshotInfo **info);
-void xemu_load_snapshot(const char *vm_name);
-void xemu_save_snapshot(const char *vm_name);
-void xemu_del_snapshot(const char *vm_name);
+#define XEMU_SNAPSHOT_DATA_MAGIC 0x78656d75
+
+#pragma pack(1)
+typedef struct TextureBuffer {
+    int width;
+    int height;
+    unsigned int format;
+    unsigned int type;
+    unsigned long size;
+    void *buffer;
+} TextureBuffer;
+#pragma pack()
+
+typedef struct XemuSnapshotHeader {
+    uint32_t magic;
+    uint32_t size;
+} XemuSnapshotHeader;
+
+typedef struct XemuSnapshotData {
+    int64_t xbe_title_len;
+    char *xbe_title;
+    bool xbe_title_present;
+    TextureBuffer thumbnail;
+    bool thumbnail_present;
+} XemuSnapshotData;
+
+int xemu_snapshots_list(QEMUSnapshotInfo **info, XemuSnapshotData **extra_data, Error **err);
+void xemu_snapshots_load(const char *vm_name, Error **err);
+void xemu_snapshots_save(const char *vm_name, Error **err);
+void xemu_snapshots_delete(const char *vm_name, Error **err);
+
+void xemu_snapshots_render_thumbnail(unsigned int tex, TextureBuffer *thumbnail);
+
+void xemu_snapshots_save_extra_data(QEMUFile *f);
+bool xemu_snapshots_offset_extra_data(QEMUFile *f);
+void xemu_snapshots_mark_dirty(void);
 
 #ifdef __cplusplus
 }

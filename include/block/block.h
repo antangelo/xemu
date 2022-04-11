@@ -123,6 +123,10 @@ typedef struct HDGeometry {
 #define BDRV_O_AUTO_RDONLY 0x20000 /* degrade to read-only if opening read-write fails */
 #define BDRV_O_IO_URING    0x40000 /* use io_uring instead of the thread pool */
 
+#ifdef XBOX
+#define BDRV_O_FORCE_RO    0x80000 /* force the file to open as RO, ignoring write locks */
+#endif
+
 #define BDRV_O_CACHE_MASK  (BDRV_O_NOCACHE | BDRV_O_NO_FLUSH)
 
 

@@ -31,6 +31,22 @@
 #include "gloffscreen.h"
 
 
+void glo_flip_buffer(unsigned int bytes_per_pixel, unsigned int stride,
+                     unsigned int width, unsigned int height, void *data)
+{
+    GLubyte *b = (GLubyte *) data;
+    GLubyte *c = &((GLubyte *) data)[stride * (height - 1)];
+    GLubyte *tmp = (GLubyte *) malloc(width * bytes_per_pixel);
+    for (int irow = 0; irow < height / 2; irow++) {
+        memcpy(tmp, b, width * bytes_per_pixel);
+        memcpy(b, c, width * bytes_per_pixel);
+        memcpy(c, tmp, width * bytes_per_pixel);
+        b += stride;
+        c -= stride;
+    }
+    free(tmp);
+}
+
 void glo_readpixels(GLenum gl_format, GLenum gl_type,
                     unsigned int bytes_per_pixel, unsigned int stride,
                     unsigned int width, unsigned int height, bool vflip,
@@ -49,17 +65,7 @@ void glo_readpixels(GLenum gl_format, GLenum gl_type,
     glReadPixels(0, 0, width, height, gl_format, gl_type, data);
 
     if (vflip) {
-        GLubyte *b = (GLubyte *) data;
-        GLubyte *c = &((GLubyte *) data)[stride * (height - 1)];
-        GLubyte *tmp = (GLubyte *) malloc(width * bytes_per_pixel);
-            for (int irow = 0; irow < height / 2; irow++) {
-            memcpy(tmp, b, width * bytes_per_pixel);
-            memcpy(b, c, width * bytes_per_pixel);
-            memcpy(c, tmp, width * bytes_per_pixel);
-            b += stride;
-            c -= stride;
-        }
-        free(tmp);
+        glo_flip_buffer(bytes_per_pixel, stride, width, height, data);
     }
 
     /* Restore GL state */

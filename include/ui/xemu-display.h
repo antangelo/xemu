@@ -54,6 +54,7 @@ void sdl2_gl_switch(DisplayChangeListener *dcl,
                     DisplaySurface *new_surface);
 void sdl2_gl_refresh(DisplayChangeListener *dcl);
 void sdl2_gl_redraw(struct sdl2_console *scon);
+GLuint sdl2_gl_get_screen_tex(bool *flip);
 
 QEMUGLContext sdl2_gl_create_context(DisplayChangeListener *dcl,
                                      QEMUGLParams *params);

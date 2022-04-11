@@ -1124,11 +1124,20 @@ static void update_fps(void)
     fps = 1000.0/avg;
 }
 
+GLuint xemu_display_tex;
+bool xemu_display_flip;
+
+GLuint sdl2_gl_get_screen_tex(bool *flip)
+{
+    *flip = !xemu_display_flip;
+    return xemu_display_tex;
+}
+
 void sdl2_gl_refresh(DisplayChangeListener *dcl)
 {
     struct sdl2_console *scon = container_of(dcl, struct sdl2_console, dcl);
     assert(scon->opengl);
-    bool flip_required = false;
+    xemu_display_flip = false;
 
     SDL_GL_MakeCurrent(scon->real_window, scon->winctx);
     update_fps();
@@ -1143,12 +1152,12 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
      * the guest code isn't using HW accelerated rendering, but just blitting
      * to the framebuffer, fall back to the VGA path.
      */
-    GLuint tex = nv2a_get_framebuffer_surface();
-    if (tex == 0) {
+    xemu_display_tex = nv2a_get_framebuffer_surface();
+    if (xemu_display_tex == 0) {
         xb_surface_gl_create_texture(scon->surface);
         scon->updates++;
-        tex = scon->surface->texture;
-        flip_required = true;
+        xemu_display_tex = scon->surface->texture;
+        xemu_display_flip = true;
     }
 
     /* FIXME: Finer locking. Event handlers in segments of the code expect
@@ -1161,7 +1170,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     sdl2_poll_events(scon);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex);
+    glBindTexture(GL_TEXTURE_2D, xemu_display_tex);
 
     // Get texture dimensions
     int tw, th;
@@ -1206,7 +1215,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
 
     // Render framebuffer and GUI
     struct decal_shader *s = blit;
-    s->flip = flip_required;
+    s->flip = xemu_display_flip;
     glViewport(0, 0, ww, wh);
     glUseProgram(s->prog);
     glBindVertexArray(s->vao);
