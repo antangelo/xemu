@@ -189,9 +189,8 @@ jobs:
         tar -C appimage -xf data.tar*
         install -DT src/xemu.appdata.xml appimage/usr/share/metainfo/xemu.appdata.xml
 
-        export VERSION=$(cat src/XEMU_VERSION)
         if [[ "${{ matrix.configuration }}" == "Debug" ]]; then
-          export VERSION=$VERSION-dbg
+          export VERSION=dbg
         fi
 
         ./linuxdeploy-x86_64.AppImage --output appimage --appdir appimage
