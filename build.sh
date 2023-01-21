@@ -96,6 +96,7 @@ package_linux() {
 postbuild=''
 debug_opts=''
 build_cflags=''
+build_ldflags=''
 default_job_count='12'
 sys_ldflags=''
 
@@ -164,7 +165,8 @@ done
 
 target="qemu-system-i386"
 if test ! -z "$debug"; then
-    build_cflags='-DXEMU_DEBUG_BUILD=1'
+    build_cflags='-DXEMU_DEBUG_BUILD=1 -fsanitize=address'
+    build_ldflags='-fsanitize=address'
     opts="--enable-debug --enable-trace-backends=log"
 else
     opts="--enable-lto"
@@ -267,7 +269,7 @@ set -x # Print commands from now on
 
 "${configure}" \
     --extra-cflags="-DXBOX=1 ${build_cflags} ${sys_cflags} ${CFLAGS}" \
-    --extra-ldflags="${sys_ldflags}" \
+    --extra-ldflags="${build_ldflags} ${sys_ldflags}" \
     --target-list=i386-softmmu \
     ${opts} \
     "$@"
