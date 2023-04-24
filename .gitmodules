@@ -64,15 +64,24 @@
 [submodule "roms/vbootrom"]
 	path = roms/vbootrom
 	url = https://gitlab.com/qemu-project/vbootrom.git
-[submodule "ui/imgui"]
-	path = ui/imgui
+[submodule "ui/thirdparty/imgui"]
+	path = ui/thirdparty/imgui
 	url = https://github.com/ocornut/imgui.git
 	ignore = untracked
-[submodule "ui/implot"]
-	path = ui/implot
+[submodule "ui/thirdparty/implot"]
+	path = ui/thirdparty/implot
 	url = https://github.com/epezent/implot.git
 	ignore = untracked
 [submodule "hw/xbox/nv2a/xxHash"]
 	path = util/xxHash
 	url = https://github.com/Cyan4973/xxHash.git
 	ignore = untracked
+[submodule "genconfig"]
+	path = genconfig
+	url = https://github.com/mborgerson/genconfig.git
+[submodule "tomlplusplus"]
+	path = tomlplusplus
+	url = https://github.com/marzer/tomlplusplus
+[submodule "hw/xbox/nv2a/thirdparty/nv2a_vsh_cpu"]
+	path = hw/xbox/nv2a/thirdparty/nv2a_vsh_cpu
+	url = https://github.com/abaire/nv2a_vsh_cpu.git

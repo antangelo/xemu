@@ -41,6 +41,7 @@
 #include "hw/pci/pci.h"
 #include "cpu.h"
 
+#include "trace.h"
 #include "swizzle.h"
 #include "lru.h"
 #include "gl/gloffscreen.h"
@@ -163,6 +164,7 @@ typedef struct TextureShape {
     unsigned int color_format;
     unsigned int levels;
     unsigned int width, height, depth;
+    bool border;
 
     unsigned int min_mipmap_level, max_mipmap_level;
     unsigned int pitch;
@@ -175,6 +177,13 @@ typedef struct TextureBinding {
     int draw_time;
     uint64_t data_hash;
     unsigned int scale;
+    unsigned int min_filter;
+    unsigned int mag_filter;
+    unsigned int addru;
+    unsigned int addrv;
+    unsigned int addrp;
+    uint32_t border_color;
+    bool border_color_set;
 } TextureBinding;
 
 typedef struct TextureKey {
@@ -264,7 +273,9 @@ typedef struct PGRAPHState {
         GLuint pvideo_tex;
         GLint pvideo_enable_loc;
         GLint pvideo_tex_loc;
+        GLint pvideo_in_pos_loc;
         GLint pvideo_pos_loc;
+        GLint pvideo_scale_loc;
         GLint pvideo_color_key_enable_loc;
         GLint pvideo_color_key_loc;
         GLint palette_loc[256];
@@ -294,12 +305,15 @@ typedef struct PGRAPHState {
 
     hwaddr dma_a, dma_b;
     Lru texture_cache;
-    struct TextureLruNode *texture_cache_entries;
+    TextureLruNode *texture_cache_entries;
     bool texture_dirty[NV2A_MAX_TEXTURES];
     TextureBinding *texture_binding[NV2A_MAX_TEXTURES];
 
-    GHashTable *shader_cache;
+    Lru shader_cache;
+    ShaderLruNode *shader_cache_entries;
     ShaderBinding *shader_binding;
+    QemuMutex shader_cache_lock;
+    QemuThread shader_disk_thread;
 
     bool texture_matrix_enable[NV2A_MAX_TEXTURES];
 
@@ -326,10 +340,11 @@ typedef struct PGRAPHState {
 
     hwaddr dma_vertex_a, dma_vertex_b;
 
-    unsigned int primitive_mode;
+    uint32_t primitive_mode;
 
     bool enable_vertex_program_write;
 
+    uint32_t vertex_state_shader_v0[4];
     uint32_t program_data[NV2A_MAX_TRANSFORM_PROGRAM_LENGTH][VSH_TOKEN_SIZE];
     bool program_data_dirty;
 
@@ -344,6 +359,8 @@ typedef struct PGRAPHState {
     uint32_t ltc1[NV2A_LTC1_COUNT][4];
     bool ltc1_dirty[NV2A_LTC1_COUNT];
 
+    float material_alpha;
+
     // should figure out where these are in lighting context
     float light_infinite_half_vector[NV2A_MAX_LIGHTS][3];
     float light_infinite_direction[NV2A_MAX_LIGHTS][3];
@@ -356,7 +373,7 @@ typedef struct PGRAPHState {
     uint16_t compressed_attrs;
 
     Lru element_cache;
-    struct VertexLruNode *element_cache_entries;
+    VertexLruNode *element_cache_entries;
 
     unsigned int inline_array_length;
     uint32_t inline_array[NV2A_MAX_BATCH_LENGTH];
@@ -370,9 +387,10 @@ typedef struct PGRAPHState {
     unsigned int draw_arrays_length;
     unsigned int draw_arrays_min_start;
     unsigned int draw_arrays_max_count;
-    /* FIXME: Unknown size, possibly endless, 1000 will do for now */
-    GLint gl_draw_arrays_start[1000];
-    GLsizei gl_draw_arrays_count[1000];
+    /* FIXME: Unknown size, possibly endless, 1250 will do for now */
+    /* Keep in sync with size used in nv2a.c */
+    GLint gl_draw_arrays_start[1250];
+    GLsizei gl_draw_arrays_count[1250];
     bool draw_arrays_prevent_connect;
 
     GLuint gl_memory_buffer;
@@ -388,10 +406,12 @@ typedef struct PGRAPHState {
     bool download_dirty_surfaces_pending;
     bool flush_pending;
     bool gl_sync_pending;
+    bool shader_cache_writeback_pending;
     QemuEvent downloads_complete;
     QemuEvent dirty_surfaces_download_complete;
     QemuEvent flush_complete;
     QemuEvent gl_sync_complete;
+    QemuEvent shader_cache_writeback_complete;
 
     unsigned int surface_scale_factor;
     uint8_t *scale_buf;
@@ -488,19 +508,32 @@ typedef struct NV2ABlockInfo {
     uint64_t size;
     MemoryRegionOps ops;
 } NV2ABlockInfo;
+extern const NV2ABlockInfo blocktable[NV_NUM_BLOCKS];
 
 extern GloContext *g_nv2a_context_render;
 extern GloContext *g_nv2a_context_display;
 
 void nv2a_update_irq(NV2AState *d);
 
-#ifdef DEBUG_NV2A_REG
-void nv2a_reg_log_read(int block, hwaddr addr, uint64_t val);
-void nv2a_reg_log_write(int block, hwaddr addr, uint64_t val);
-#else
-#define nv2a_reg_log_read(block, addr, val) do {} while (0)
-#define nv2a_reg_log_write(block, addr, val) do {} while (0)
-#endif
+static inline
+void nv2a_reg_log_read(int block, hwaddr addr, unsigned int size, uint64_t val)
+{
+    const char *block_name = "UNK";
+    if (block < ARRAY_SIZE(blocktable) && blocktable[block].name) {
+        block_name = blocktable[block].name;
+    }
+    trace_nv2a_reg_read(block_name, addr, size, val);
+}
+
+static inline
+void nv2a_reg_log_write(int block, hwaddr addr, unsigned int size, uint64_t val)
+{
+    const char *block_name = "UNK";
+    if (block < ARRAY_SIZE(blocktable) && blocktable[block].name) {
+        block_name = blocktable[block].name;
+    }
+    trace_nv2a_reg_write(block_name, addr, size, val);
+}
 
 #define DEFINE_PROTO(n) \
     uint64_t n##_read(void *opaque, hwaddr addr, unsigned int size); \

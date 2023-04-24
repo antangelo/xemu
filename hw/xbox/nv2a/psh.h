@@ -33,6 +33,17 @@ enum PshAlphaFunc {
     ALPHA_FUNC_ALWAYS,
 };
 
+enum PshShadowDepthFunc {
+    SHADOW_DEPTH_FUNC_NEVER,
+    SHADOW_DEPTH_FUNC_LESS,
+    SHADOW_DEPTH_FUNC_EQUAL,
+    SHADOW_DEPTH_FUNC_LEQUAL,
+    SHADOW_DEPTH_FUNC_GREATER,
+    SHADOW_DEPTH_FUNC_NOTEQUAL,
+    SHADOW_DEPTH_FUNC_GEQUAL,
+    SHADOW_DEPTH_FUNC_ALWAYS,
+};
+
 enum ConvolutionFilter {
     CONVOLUTION_FILTER_DISABLED,
     CONVOLUTION_FILTER_QUINCUNX,
@@ -57,10 +68,18 @@ typedef struct PshState {
     bool alphakill[4];
     enum ConvolutionFilter conv_tex[4];
 
+    float border_logical_size[4][3];
+    float border_inv_real_size[4][3];
+
+    bool shadow_map[4];
+    enum PshShadowDepthFunc shadow_depth_func;
+
     bool alpha_test;
     enum PshAlphaFunc alpha_func;
 
     bool window_clip_exclusive;
+
+    bool smooth_shading;
 } PshState;
 
 MString *psh_translate(const PshState state);

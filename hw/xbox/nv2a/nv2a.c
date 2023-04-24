@@ -21,9 +21,6 @@
 
 #include "hw/xbox/nv2a/nv2a_int.h"
 
-#define DBG_IRQ 0
-#define DBG_DMA 0
-
 void nv2a_update_irq(NV2AState *d)
 {
     /* PFIFO */
@@ -48,7 +45,7 @@ void nv2a_update_irq(NV2AState *d)
     }
 
     if (d->pmc.pending_interrupts && d->pmc.enabled_interrupts) {
-        NV2A_XPRINTF(DBG_IRQ, "raise irq\n");
+        trace_nv2a_irq(d->pmc.pending_interrupts);
         pci_irq_assert(PCI_DEVICE(d));
     } else {
         pci_irq_deassert(PCI_DEVICE(d));
@@ -77,10 +74,8 @@ void *nv_dma_map(NV2AState *d, hwaddr dma_obj_address, hwaddr *len)
     DMAObject dma = nv_dma_load(d, dma_obj_address);
 
     /* TODO: Handle targets and classes properly */
-    NV2A_XPRINTF(DBG_DMA,
-                 "dma_map %" HWADDR_PRIx " - %x, %x, %" HWADDR_PRIx " %" HWADDR_PRIx "\n",
-                 dma_obj_address,
-                 dma.dma_class, dma.dma_target, dma.address, dma.limit);
+    trace_nv2a_dma_map(dma_obj_address, dma.dma_class, dma.dma_target,
+                       dma.address, dma.limit);
     dma.address &= 0x07FFFFFF;
 
     assert(dma.address < memory_region_size(d->vram));
@@ -89,74 +84,35 @@ void *nv_dma_map(NV2AState *d, hwaddr dma_obj_address, hwaddr *len)
     return d->vram_ptr + dma.address;
 }
 
-const struct NV2ABlockInfo blocktable[] = {
-    #define ENTRY(NAME, OFFSET, SIZE, RDFUNC, WRFUNC)  \
-    [NV_##NAME] = {                                    \
-        .name   = #NAME,                               \
-        .offset = OFFSET,                              \
-        .size   = SIZE,                                \
-        .ops    = { .read = RDFUNC, .write = WRFUNC }, \
+const NV2ABlockInfo blocktable[NV_NUM_BLOCKS] = {
+    #define ENTRY(NAME, LNAME, OFFSET, SIZE) [NV_##NAME] = {            \
+        .name   = #NAME,                                                \
+        .offset = OFFSET,                                               \
+        .size   = SIZE,                                                 \
+        .ops    = { .read = LNAME ## _read, .write = LNAME ## _write }, \
     }
-    ENTRY(PMC,      0x000000, 0x001000, pmc_read,      pmc_write),
-    ENTRY(PBUS,     0x001000, 0x001000, pbus_read,     pbus_write),
-    ENTRY(PFIFO,    0x002000, 0x002000, pfifo_read,    pfifo_write),
-    ENTRY(PRMA,     0x007000, 0x001000, prma_read,     prma_write),
-    ENTRY(PVIDEO,   0x008000, 0x001000, pvideo_read,   pvideo_write),
-    ENTRY(PTIMER,   0x009000, 0x001000, ptimer_read,   ptimer_write),
-    ENTRY(PCOUNTER, 0x00a000, 0x001000, pcounter_read, pcounter_write),
-    ENTRY(PVPE,     0x00b000, 0x001000, pvpe_read,     pvpe_write),
-    ENTRY(PTV,      0x00d000, 0x001000, ptv_read,      ptv_write),
-    ENTRY(PRMFB,    0x0a0000, 0x020000, prmfb_read,    prmfb_write),
-    ENTRY(PRMVIO,   0x0c0000, 0x001000, prmvio_read,   prmvio_write),
-    ENTRY(PFB,      0x100000, 0x001000, pfb_read,      pfb_write),
-    ENTRY(PSTRAPS,  0x101000, 0x001000, pstraps_read,  pstraps_write),
-    ENTRY(PGRAPH,   0x400000, 0x002000, pgraph_read,   pgraph_write),
-    ENTRY(PCRTC,    0x600000, 0x001000, pcrtc_read,    pcrtc_write),
-    ENTRY(PRMCIO,   0x601000, 0x001000, prmcio_read,   prmcio_write),
-    ENTRY(PRAMDAC,  0x680000, 0x001000, pramdac_read,  pramdac_write),
-    ENTRY(PRMDIO,   0x681000, 0x001000, prmdio_read,   prmdio_write),
-    // ENTRY(PRAMIN,   0x700000, 0x100000, pramin_read,   pramin_write),
-    ENTRY(USER,     0x800000, 0x800000, user_read,     user_write),
+    ENTRY(PMC,      pmc,      0x000000, 0x001000),
+    ENTRY(PBUS,     pbus,     0x001000, 0x001000),
+    ENTRY(PFIFO,    pfifo,    0x002000, 0x002000),
+    ENTRY(PRMA,     prma,     0x007000, 0x001000),
+    ENTRY(PVIDEO,   pvideo,   0x008000, 0x001000),
+    ENTRY(PTIMER,   ptimer,   0x009000, 0x001000),
+    ENTRY(PCOUNTER, pcounter, 0x00a000, 0x001000),
+    ENTRY(PVPE,     pvpe,     0x00b000, 0x001000),
+    ENTRY(PTV,      ptv,      0x00d000, 0x001000),
+    ENTRY(PRMFB,    prmfb,    0x0a0000, 0x020000),
+    ENTRY(PRMVIO,   prmvio,   0x0c0000, 0x001000),
+    ENTRY(PFB,      pfb,      0x100000, 0x001000),
+    ENTRY(PSTRAPS,  pstraps,  0x101000, 0x001000),
+    ENTRY(PGRAPH,   pgraph,   0x400000, 0x002000),
+    ENTRY(PCRTC,    pcrtc,    0x600000, 0x001000),
+    ENTRY(PRMCIO,   prmcio,   0x601000, 0x001000),
+    ENTRY(PRAMDAC,  pramdac,  0x680000, 0x001000),
+    ENTRY(PRMDIO,   prmdio,   0x681000, 0x001000),
+    // ENTRY(PRAMIN,   pramin,   0x700000, 0x100000),
+    ENTRY(USER,     user,     0x800000, 0x800000),
 };
 #undef ENTRY
-
-#ifdef DEBUG_NV2A_REG
-static const char *nv2a_reg_names[] = {};
-
-void nv2a_reg_log_read(int block, hwaddr addr, uint64_t val)
-{
-    if (blocktable[block].name) {
-        hwaddr naddr = blocktable[block].offset + addr;
-        if (naddr < ARRAY_SIZE(nv2a_reg_names) && nv2a_reg_names[naddr]) {
-            NV2A_DPRINTF("%s: read [%s] -> 0x%" PRIx64 "\n",
-                    blocktable[block].name, nv2a_reg_names[naddr], val);
-        } else {
-            NV2A_DPRINTF("%s: read [%" HWADDR_PRIx "] -> 0x%" PRIx64 "\n",
-                         blocktable[block].name, addr, val);
-        }
-    } else {
-        NV2A_DPRINTF("(%d?): read [%" HWADDR_PRIx "] -> 0x%" PRIx64 "\n",
-                     block, addr, val);
-    }
-}
-
-void nv2a_reg_log_write(int block, hwaddr addr, uint64_t val)
-{
-    if (blocktable[block].name) {
-        hwaddr naddr = blocktable[block].offset + addr;
-        if (naddr < ARRAY_SIZE(nv2a_reg_names) && nv2a_reg_names[naddr]) {
-            NV2A_DPRINTF("%s: [%s] = 0x%" PRIx64 "\n",
-                    blocktable[block].name, nv2a_reg_names[naddr], val);
-        } else {
-            NV2A_DPRINTF("%s: [%" HWADDR_PRIx "] = 0x%" PRIx64 "\n",
-                         blocktable[block].name, addr, val);
-        }
-    } else {
-        NV2A_DPRINTF("(%d?): [%" HWADDR_PRIx "] = 0x%" PRIx64 "\n",
-                     block, addr, val);
-    }
-}
-#endif
 
 static int nv2a_get_bpp(VGACommonState *s)
 {
@@ -322,6 +278,7 @@ static void nv2a_reset(NV2AState *d)
 
     memset(d->pfifo.regs, 0, sizeof(d->pfifo.regs));
     memset(d->pgraph.regs, 0, sizeof(d->pgraph.regs));
+    memset(d->pvideo.regs, 0, sizeof(d->pvideo.regs));
 
     d->pcrtc.start = 0;
     d->pramdac.core_clock_coeff = 0x00011C01; /* 189MHz...? */
@@ -419,13 +376,24 @@ static void nv2a_vm_state_change(void *opaque, bool running, RunState state)
         nv2a_lock_fifo(d);
         qatomic_set(&d->pfifo.halt, true);
         nv2a_unlock_fifo(d);
+    } else if (state == RUN_STATE_RUNNING) {
+        nv2a_lock_fifo(d);
+        qatomic_set(&d->pfifo.halt, false);
+        nv2a_unlock_fifo(d);
+    } else if (state == RUN_STATE_SHUTDOWN) {
+        nv2a_lock_fifo(d);
+        qatomic_set(&d->pgraph.shader_cache_writeback_pending, true);
+        qemu_event_reset(&d->pgraph.shader_cache_writeback_complete);
+        nv2a_unlock_fifo(d);
+        qemu_mutex_unlock_iothread();
+        qemu_event_wait(&d->pgraph.shader_cache_writeback_complete);
+        qemu_mutex_lock_iothread();
     }
 }
 
 static int nv2a_post_save(void *opaque)
 {
     NV2AState *d = opaque;
-    qatomic_set(&d->pfifo.halt, false);
     nv2a_unlock_fifo(d);
     return 0;
 }
@@ -440,7 +408,6 @@ static int nv2a_pre_load(void *opaque)
 static int nv2a_post_load(void *opaque, int version_id)
 {
     NV2AState *d = opaque;
-    qatomic_set(&d->pfifo.halt, false);
     qatomic_set(&d->pgraph.flush_pending, true);
     nv2a_unlock_fifo(d);
     return 0;
@@ -528,6 +495,8 @@ static const VMStateDescription vmstate_nv2a = {
         VMSTATE_UINT64(pgraph.report_offset, NV2AState),
         VMSTATE_UINT64(pgraph.dma_vertex_a, NV2AState),
         VMSTATE_UINT64(pgraph.dma_vertex_b, NV2AState),
+        VMSTATE_UINT32(pgraph.primitive_mode, NV2AState),
+        VMSTATE_UINT32_ARRAY(pgraph.vertex_state_shader_v0, NV2AState, 4),
         VMSTATE_UINT32_2DARRAY(pgraph.program_data, NV2AState, NV2A_MAX_TRANSFORM_PROGRAM_LENGTH, VSH_TOKEN_SIZE),
         VMSTATE_UINT32_2DARRAY(pgraph.vsh_constants, NV2AState, NV2A_VERTEXSHADER_CONSTANTS, 4),
         VMSTATE_BOOL_ARRAY(pgraph.vsh_constants_dirty, NV2AState, NV2A_VERTEXSHADER_CONSTANTS),
@@ -543,10 +512,10 @@ static const VMStateDescription vmstate_nv2a = {
         VMSTATE_UINT32(pgraph.inline_elements_length, NV2AState), // fixme
         VMSTATE_UINT32_ARRAY(pgraph.inline_elements, NV2AState, NV2A_MAX_BATCH_LENGTH),
         VMSTATE_UINT32(pgraph.inline_buffer_length, NV2AState), // fixme
-        VMSTATE_UINT32(pgraph.draw_arrays_length, NV2AState), // fixme
-        VMSTATE_UINT32(pgraph.draw_arrays_max_count, NV2AState), // fixme
-        // GLint gl_draw_arrays_start[1000]; // fixme
-        // GLsizei gl_draw_arrays_count[1000]; // fixme
+        VMSTATE_UINT32(pgraph.draw_arrays_length, NV2AState),
+        VMSTATE_UINT32(pgraph.draw_arrays_max_count, NV2AState),
+        VMSTATE_INT32_ARRAY(pgraph.gl_draw_arrays_start, NV2AState, 1250),
+        VMSTATE_INT32_ARRAY(pgraph.gl_draw_arrays_count, NV2AState, 1250),
         VMSTATE_UINT32_ARRAY(pgraph.regs, NV2AState, 0x2000),
         VMSTATE_UINT32(pmc.pending_interrupts, NV2AState),
         VMSTATE_UINT32(pmc.enabled_interrupts, NV2AState),

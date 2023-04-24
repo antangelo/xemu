@@ -15,53 +15,36 @@ softmmu_ss.add(files(
   'udmabuf.c',
 ))
 
+subdir('thirdparty')
+
 xemu_ss = ss.source_set()
 xemu_ss.add(files(
-  'imgui/imgui.cpp',
-  'imgui/imgui_draw.cpp',
-  'imgui/imgui_tables.cpp',
-  'imgui/imgui_demo.cpp',
-  'imgui/imgui_widgets.cpp',
-  'imgui/backends/imgui_impl_opengl3.cpp',
-  'imgui/backends/imgui_impl_sdl.cpp',
-  'implot/implot.cpp',
-  'implot/implot_demo.cpp',
-  'implot/implot_items.cpp',
-
-  'xemu.c',
-  'xemu-custom-widgets.c',
-  'xemu-data.c',
   'xemu-input.c',
   'xemu-monitor.c',
   'xemu-net.c',
-  'xemu-settings.c',
-  'xemu-shaders.c',
-  'xemu-hud.cc',
-  'xemu-reporting.cc',
+  'xemu-settings.cc',
+
+  'xemu.c',
+  'xemu-data.c',
 ))
-xemu_ss.add(when: 'CONFIG_WIN32', if_true: files('xemu-update.cc'))
 
-imgui_flags = ['-DIMGUI_IMPL_OPENGL_LOADER_CUSTOM="epoxy/gl.h"']
+subdir('xui')
 
-if 'CONFIG_WIN32' in config_host
-imgui_flags += ['-DWIN32', '-DMINGW32']
+if 'CONFIG_DARWIN' in config_host
+xemu_cocoa = dependency('appleframeworks', modules: 'Cocoa')
+xemu_ss.add(xemu_cocoa)
 endif
 
 if 'CONFIG_LINUX' in config_host
-imgui_flags += ['-DLINUX']
+xemu_ss.add(xemu_gtk)
 endif
 
-if 'CONFIG_DARWIN' in config_host
-imgui_flags += ['-DAPPLE']
-xemu_cocoa = dependency('appleframeworks', modules: 'Cocoa')
-xemu_ss.add(xemu_cocoa) # FIXME: Use existing cocoa name
-endif
+xemu_ss.add(when: 'CONFIG_LINUX', if_true: [xemu_gtk, files('xemu-os-utils-linux.c')])
+xemu_ss.add(when: 'CONFIG_WIN32', if_true: files('xemu-os-utils-windows.c'))
+xemu_ss.add(when: 'CONFIG_DARWIN', if_true: files('xemu-os-utils-macos.m'))
+xemu_ss.add(when: 'CONFIG_RENDERDOC', if_true: [libdl])
+xemu_ss.add(imgui, implot, stb_image, noc, sdl, opengl, openssl, fa, fpng, json, httplib)
 
-imgui = declare_dependency(compile_args: imgui_flags, include_directories: 'imgui')
-xemu_ss.add(sdl, opengl, openssl, imgui)
-xemu_ss.add(when: 'CONFIG_LINUX', if_true: [xemu_gtk, files('xemu-os-utils-linux.c', 'noc_file_dialog_gtk.c')])
-xemu_ss.add(when: 'CONFIG_WIN32', if_true: files('xemu-os-utils-windows.c', 'noc_file_dialog_win32.c'))
-xemu_ss.add(when: 'CONFIG_DARWIN', if_true: files('xemu-os-utils-macos.m', 'noc_file_dialog_macos.m'))
 softmmu_ss.add_all(xemu_ss)
 
 softmmu_ss.add([spice_headers, files('spice-module.c')])

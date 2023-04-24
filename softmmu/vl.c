@@ -1970,9 +1970,7 @@ static void qemu_create_late_backends(void)
     net_init_clients(&error_fatal);
 
 #ifdef XBOX
-    int xemu_net_enabled;
-    xemu_settings_get_bool(XEMU_SETTINGS_NETWORK_ENABLED, &xemu_net_enabled);
-    if (xemu_net_enabled) {
+    if (g_config.net.enable) {
         xemu_net_enable();
     }
 #endif
@@ -2719,10 +2717,6 @@ static void qemu_machine_creation_done(void)
 
     qdev_machine_creation_done();
 
-#ifdef XBOX
-    xemu_input_init();
-#endif
-
     if (machine->cgs) {
         /*
          * Verify that Confidential Guest Support has actually been initialized
@@ -2772,6 +2766,48 @@ void qmp_x_exit_preconfig(Error **errp)
     }
 }
 
+static const char *get_eeprom_path(void)
+{
+    const char *path = g_config.sys.files.eeprom_path;
+
+    if (strlen(path) == 0) {
+        path = xemu_settings_get_default_eeprom_path();
+        xemu_settings_set_string(&g_config.sys.files.eeprom_path, path);
+    }
+
+    if (qemu_access(path, F_OK) == -1) {
+        if (!xbox_eeprom_generate(path, XBOX_EEPROM_VERSION_R1)) {
+            char *msg = g_strdup_printf("Failed to generate EEPROM file '%s'."
+                                        "\n\nPlease check machine settings.",
+                                        path);
+            xemu_queue_error_message(msg);
+            g_free(msg);
+            return NULL;
+        }
+    }
+
+    int size = get_image_size(path);
+
+    if (size < 0) {
+        char *msg = g_strdup_printf("Failed to open EEPROM file '%s'.\n\n"
+                                    "Please check machine settings.", path);
+        xemu_queue_error_message(msg);
+        g_free(msg);
+        return NULL;
+    }
+
+    if (size != 256) {
+        char *msg = g_strdup_printf(
+            "Invalid EEPROM file '%s' size of %d; should be 256 bytes.\n\n"
+            "Please check machine settings.", path, size);
+        xemu_queue_error_message(msg);
+        g_free(msg);
+        return NULL;
+    }
+
+    return path;
+}
+
 void qemu_init(int argc, char **argv, char **envp)
 {
     QemuOpts *opts;
@@ -2794,18 +2830,7 @@ void qemu_init(int argc, char **argv, char **envp)
     // reporting. This should be replaced eventually, but is "good enough" for
     // now.
     //
-    for (int i = 1; i < argc; i++) {
-        if (argv[i] && strcmp(argv[i], "-config_path") == 0) {
-            argv[i] = NULL;
-            if (i < argc - 1 && argv[i+1]) {
-                xemu_settings_set_path(argv[i+1]);
-                argv[i+1] = NULL;
-            }
-            break;
-        }
-    }
-    xemu_settings_load();
-    int first_boot = xemu_settings_did_fail_to_load();
+
     int fake_argc = 32 + argc;
     char **fake_argv = malloc(sizeof(char*)*fake_argc);
     memset(fake_argv, 0, sizeof(char*)*fake_argc);
@@ -2815,8 +2840,7 @@ void qemu_init(int argc, char **argv, char **envp)
     fake_argv[fake_argc++] = strdup("-machine");
 
     char *bootrom_arg = NULL;
-    const char *bootrom_path;
-    xemu_settings_get_string(XEMU_SETTINGS_SYSTEM_BOOTROM_PATH, &bootrom_path);
+    const char *bootrom_path = g_config.sys.files.bootrom_path;
 
     if (strlen(bootrom_path) > 0) {
         int bootrom_size = get_image_size(bootrom_path);
@@ -2842,90 +2866,58 @@ void qemu_init(int argc, char **argv, char **envp)
         }
     }
 
-    int short_animation;
-    xemu_settings_get_bool(XEMU_SETTINGS_SYSTEM_SHORTANIM, &short_animation);
+    const char *avpack_str = (const char *[]){
+        "scart",
+        "hdtv",
+        "vga",
+        "rfu",
+        "svideo",
+        "composite",
+        "none",
+    }[g_config.sys.avpack];
 
-    fake_argv[fake_argc++] = g_strdup_printf("xbox%s%s%s",
+    fake_argv[fake_argc++] = g_strdup_printf("xbox%s%s%s,avpack=%s",
         (bootrom_arg != NULL) ? bootrom_arg : "",
-        short_animation ? ",short-animation=on" : "",
-        ",kernel-irqchip=off"
+        g_config.general.skip_boot_anim ? ",short-animation=on" : "",
+        ",kernel-irqchip=off",
+        avpack_str
         );
 
     if (bootrom_arg != NULL) {
         g_free(bootrom_arg);
     }
 
-    const char *eeprom_path;
-    xemu_settings_get_string(XEMU_SETTINGS_SYSTEM_EEPROM_PATH, &eeprom_path);
-
-    // Sanity check EEPROM file
-    if (strlen(eeprom_path) > 0) {
-        int eeprom_size = get_image_size(eeprom_path);
-        if (eeprom_size < 0) {
-            char *msg = g_strdup_printf("Failed to open EEPROM file '%s'.\n\n"
-                "Automatically generating a new one instead. "
-                "Please check machine settings for the new path and move if desired.", eeprom_path);
-            xemu_queue_error_message(msg);
-            g_free(msg);
-            eeprom_path = "";
-        } else if (eeprom_size != 256) {
-            char *msg = g_strdup_printf(
-                "Invalid EEPROM file '%s' size of %d; should be 256 bytes.\n\n"
-                "Automatically generating a new one instead. "
-                "Please check machine settings for the new path and move if desired.", eeprom_path, eeprom_size);
-            xemu_queue_error_message(msg);
-            g_free(msg);
-            eeprom_path = "";
-        } else {
-            fake_argv[fake_argc++] = strdup("-device");
-            char *escaped_eeprom_path = strdup_double_commas(eeprom_path);
-            fake_argv[fake_argc++] = g_strdup_printf("smbus-storage,file=%s",
-                                                     escaped_eeprom_path);
-            free(escaped_eeprom_path);
-        }
+    const char *eeprom_path = get_eeprom_path();
+    if (eeprom_path) {
+        fake_argv[fake_argc++] = strdup("-device");
+        char *escaped_eeprom_path = strdup_double_commas(eeprom_path);
+        fake_argv[fake_argc++] = g_strdup_printf("smbus-storage,file=%s",
+                                                 escaped_eeprom_path);
+        free(escaped_eeprom_path);
+    } else {
+        autostart = 0;
     }
 
-    // Generate a new EEPROM file if one isn't specified or contents are invalid
-    if (strlen(eeprom_path) == 0) {
-        eeprom_path = xemu_settings_get_default_eeprom_path();
-        if (xbox_eeprom_generate(eeprom_path, XBOX_EEPROM_VERSION_R1)) {
-            xemu_settings_set_string(XEMU_SETTINGS_SYSTEM_EEPROM_PATH, eeprom_path);
-            xemu_settings_save();
-            fake_argv[fake_argc++] = strdup("-device");
-            char *escaped_eeprom_path = strdup_double_commas(eeprom_path);
-            fake_argv[fake_argc++] = g_strdup_printf("smbus-storage,file=%s",
-                                                     escaped_eeprom_path);
-            free(escaped_eeprom_path);
-        } else {
-            char *msg = g_strdup_printf("Failed to generate eeprom file '%s'. Please check machine settings.", eeprom_path);
-            xemu_queue_error_message(msg);
-            g_free(msg);
-        }
-    }
-
-    const char *flash_path;
-    xemu_settings_get_string(XEMU_SETTINGS_SYSTEM_FLASH_PATH, &flash_path);
-    autostart = 0; // Do not auto-start the machine without a valid BIOS file
-    if (first_boot) {
+    const char *flashrom_path = g_config.sys.files.flashrom_path;
+    if (g_config.general.show_welcome) {
         // Don't display an error if this is the first boot. Give user a chance
         // to configure the path.
-    } else if (xemu_check_file(flash_path)) {
-        char *msg = g_strdup_printf("Failed to open flash file '%s'. Please check machine settings.", flash_path);
+        autostart = 0;
+    } else if (xemu_check_file(flashrom_path)) {
+        char *msg = g_strdup_printf("Failed to open flash file '%s'. Please check machine settings.", flashrom_path);
         xemu_queue_error_message(msg);
         g_free(msg);
+        autostart = 0;
     } else {
         fake_argv[fake_argc++] = strdup("-bios");
-        fake_argv[fake_argc++] = strdup(flash_path);
-        autostart = 1;
+        fake_argv[fake_argc++] = strdup(flashrom_path);
     }
 
-    int mem;
-    xemu_settings_get_int(XEMU_SETTINGS_SYSTEM_MEMORY, &mem);
+    int mem = ((int)g_config.sys.mem_limit + 1) * 64;
     fake_argv[fake_argc++] = strdup("-m");
     fake_argv[fake_argc++] = g_strdup_printf("%d", mem);
 
-    const char *hdd_path;
-    xemu_settings_get_string(XEMU_SETTINGS_SYSTEM_HDD_PATH, &hdd_path);
+    const char *hdd_path = g_config.sys.files.hdd_path;
     if (strlen(hdd_path) > 0) {
         if (xemu_check_file(hdd_path)) {
             char *msg = g_strdup_printf("Failed to open hard disk image file '%s'. Please check machine settings.", hdd_path);
@@ -2941,9 +2933,7 @@ void qemu_init(int argc, char **argv, char **envp)
         }
     }
 
-    const char *dvd_path = "";
-    xemu_settings_get_string(XEMU_SETTINGS_SYSTEM_DVD_PATH, &dvd_path);
-
+    const char *dvd_path = g_config.sys.files.dvd_path;
     // Allow overriding the dvd path from command line
     for (int i = 1; i < argc; i++) {
         if (argv[i] && strcmp(argv[i], "-dvd_path") == 0) {
@@ -2975,6 +2965,10 @@ void qemu_init(int argc, char **argv, char **envp)
 
     fake_argv[fake_argc++] = strdup("-display");
     fake_argv[fake_argc++] = strdup("xemu");
+
+    // Create USB Daughterboard for 1.0 Xbox. This is connected to Port 1 of the Root hub.
+    fake_argv[fake_argc++] = strdup("-device");
+    fake_argv[fake_argc++] = strdup("usb-hub,port=1,ports=4");
 
 #ifdef _WIN32
     // FIXME: Create this dummy device to prevent logspam

@@ -43,10 +43,10 @@
 #include "sysemu/runstate.h"
 #include "sysemu/runstate-action.h"
 #include "sysemu/sysemu.h"
-#include "xemu-hud.h"
+#include "xui/xemu-hud.h"
 #include "xemu-input.h"
 #include "xemu-settings.h"
-#include "xemu-shaders.h"
+// #include "xemu-shaders.h"
 #include "xemu-version.h"
 #include "xemu-os-utils.h"
 
@@ -54,6 +54,8 @@
 
 #include "hw/xbox/smbus.h" // For eject, drive tray
 #include "hw/xbox/nv2a/nv2a.h"
+
+#include <stb_image.h>
 
 #ifdef _WIN32
 // Provide hint to prefer high-performance graphics for hybrid systems
@@ -108,8 +110,7 @@ static SDL_Cursor *guest_sprite;
 static Notifier mouse_mode_notifier;
 static SDL_Window *m_window;
 static SDL_GLContext m_context;
-int scaling_mode = 1;
-struct decal_shader *blit;
+// struct decal_shader *blit;
 
 static QemuSemaphore display_init_sem;
 
@@ -379,7 +380,9 @@ static void set_full_screen(struct sdl2_console *scon, bool set)
 
     if (gui_fullscreen) {
         SDL_SetWindowFullscreen(scon->real_window,
-                                SDL_WINDOW_FULLSCREEN_DESKTOP);
+                                (g_config.display.window.fullscreen_exclusive ?
+                                SDL_WINDOW_FULLSCREEN :
+                                SDL_WINDOW_FULLSCREEN_DESKTOP));
         gui_saved_grab = gui_grab;
         sdl_grab_start(scon);
     } else {
@@ -591,6 +594,11 @@ static void handle_windowevent(SDL_Event *ev)
             info.width = ev->window.data1;
             info.height = ev->window.data2;
             dpy_set_ui_info(scon->dcl.con, &info);
+
+            if (!gui_fullscreen) {
+                g_config.display.window.last_width = ev->window.data1;
+                g_config.display.window.last_height = ev->window.data2;
+            }
         }
         sdl2_redraw(scon);
         break;
@@ -841,16 +849,59 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
 #endif
                                   , xemu_version);
 
+    // Decide window size
+    int min_window_width = 640;
+    int min_window_height = 480;
+    int window_width = min_window_width;
+    int window_height = min_window_height;
+
+    const int res_table[][2] = {
+        {640,  480},
+        {1280, 720},
+        {1280, 800},
+        {1280, 960},
+        {1920, 1080},
+        {2560, 1440},
+        {2560, 1600},
+        {2560, 1920},
+        {3840, 2160}
+    };
+
+    if (g_config.display.window.startup_size == CONFIG_DISPLAY_WINDOW_STARTUP_SIZE_LAST_USED) {
+        window_width  = g_config.display.window.last_width;
+        window_height = g_config.display.window.last_height;
+    } else {
+        window_width  = res_table[g_config.display.window.startup_size-1][0];
+        window_height = res_table[g_config.display.window.startup_size-1][1];
+    }
+
+    if (window_width < min_window_width) {
+        window_width = min_window_width;
+    }
+    if (window_height < min_window_height) {
+        window_height = min_window_height;
+    }
+
+    SDL_WindowFlags window_flags = (SDL_WindowFlags)(SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+
     // Create main window
     m_window = SDL_CreateWindow(
-        title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1024, 768,
-        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, window_width, window_height,
+        window_flags);
     if (m_window == NULL) {
         fprintf(stderr, "Failed to create main window\n");
         SDL_Quit();
         exit(1);
     }
     g_free(title);
+    SDL_SetWindowMinimumSize(m_window, min_window_width, min_window_height);
+
+    SDL_DisplayMode disp_mode;
+    SDL_GetCurrentDisplayMode(SDL_GetWindowDisplayIndex(m_window), &disp_mode);
+    if (disp_mode.w < window_width || disp_mode.h < window_height) {
+        SDL_SetWindowSize(m_window, min_window_width, min_window_height);
+        SDL_SetWindowPosition(m_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
 
     m_context = SDL_GL_CreateContext(m_window);
 
@@ -886,6 +937,7 @@ static void sdl2_display_very_early_init(DisplayOptions *o)
         // by the SDL surface.
     }
 
+    fprintf(stderr, "CPU: %s\n", xemu_get_cpu_info());
     fprintf(stderr, "OS_Version: %s\n", xemu_get_os_info());
     fprintf(stderr, "GL_VENDOR: %s\n", glGetString(GL_VENDOR));
     fprintf(stderr, "GL_RENDERER: %s\n", glGetString(GL_RENDERER));
@@ -905,9 +957,9 @@ static void sdl2_display_early_init(DisplayOptions *o)
     display_opengl = 1;
 
     SDL_GL_MakeCurrent(m_window, m_context);
-    SDL_GL_SetSwapInterval(0);
+    SDL_GL_SetSwapInterval(g_config.display.window.vsync ? 1 : 0);
     xemu_hud_init(m_window, m_context);
-    blit = create_decal_shader(SHADER_TYPE_BLIT_GAMMA);
+    // blit = create_decal_shader(SHADER_TYPE_BLIT_GAMMA);
 }
 
 static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
@@ -919,12 +971,12 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
     assert(o->type == DISPLAY_TYPE_XEMU);
     SDL_GL_MakeCurrent(m_window, m_context);
 
-    xemu_settings_get_enum(XEMU_SETTINGS_DISPLAY_SCALE, &scaling_mode);
-
     memset(&info, 0, sizeof(info));
     SDL_VERSION(&info.version);
 
     gui_fullscreen = o->has_full_screen && o->full_screen;
+
+    gui_fullscreen |= g_config.display.window.fullscreen_on_startup;
 
 #if 1
     // Explicitly set number of outputs to 1 for a single screen. We don't need
@@ -1129,6 +1181,7 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
      */
     GLuint tex = nv2a_get_framebuffer_surface();
     if (tex == 0) {
+        // FIXME: Don't upload if notdirty
         xb_surface_gl_create_texture(scon->surface);
         scon->updates++;
         tex = scon->surface->texture;
@@ -1144,72 +1197,9 @@ void sdl2_gl_refresh(DisplayChangeListener *dcl)
     qemu_mutex_lock_iothread();
     sdl2_poll_events(scon);
 
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex);
-
-    // Get texture dimensions
-    int tw, th;
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
-    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
-
-    // Get window dimensions
-    int ww, wh;
-    SDL_GL_GetDrawableSize(scon->real_window, &ww, &wh);
-
-    // Calculate scaling factors
-    float scale[2];
-    if (scaling_mode == DISPLAY_SCALE_STRETCH) {
-        // Stretch to fit
-        scale[0] = 1.0;
-        scale[1] = 1.0;
-    } else if (scaling_mode == DISPLAY_SCALE_CENTER) {
-        // Centered
-        scale[0] = (float)tw/(float)ww;
-        scale[1] = (float)th/(float)wh;
-    } else {
-        float t_ratio;
-        if (scaling_mode == DISPLAY_SCALE_WS169) {
-            // Scale to fit window using a fixed 16:9 aspect ratio
-            t_ratio = 16.0f/9.0f;
-        } else if (scaling_mode == DISPLAY_SCALE_FS43) {
-            t_ratio = 4.0f/3.0f;
-        } else {
-            // Scale to fit, preserving framebuffer aspect ratio
-            t_ratio = (float)tw/(float)th;
-        }
-
-        float w_ratio = (float)ww/(float)wh;
-        if (w_ratio >= t_ratio) {
-            scale[0] = t_ratio/w_ratio;
-            scale[1] = 1.0;
-        } else {
-            scale[0] = 1.0;
-            scale[1] = w_ratio/t_ratio;
-        }
-    }
-
-    // Render framebuffer and GUI
-    struct decal_shader *s = blit;
-    s->flip = flip_required;
-    glViewport(0, 0, ww, wh);
-    glUseProgram(s->prog);
-    glBindVertexArray(s->vao);
-    glUniform1i(s->FlipY_loc, s->flip);
-    glUniform4f(s->ScaleOffset_loc, scale[0], scale[1], 0, 0);
-    glUniform4f(s->TexScaleOffset_loc, 1.0, 1.0, 0, 0);
-    glUniform1i(s->tex_loc, 0);
-
-    const uint8_t *palette = nv2a_get_dac_palette();
-    for (int i = 0; i < 256; i++) {
-        uint32_t e = (palette[i * 3 + 2] << 16) | (palette[i * 3 + 1] << 8) |
-                     palette[i * 3];
-        glUniform1ui(s->palette_loc[i], e);
-    }
-
     glClearColor(0, 0, 0, 0);
     glClear(GL_COLOR_BUFFER_BIT);
-    glDrawElements(GL_TRIANGLE_FAN, 4, GL_UNSIGNED_INT, NULL);
-
+    xemu_hud_set_framebuffer_texture(tex, flip_required);
     xemu_hud_render();
 
     // Release BQL before swapping (which may sleep if swap interval is not immediate)
@@ -1503,6 +1493,28 @@ int main(int argc, char **argv)
     gArgc = argc;
     gArgv = argv;
 
+    for (int i = 1; i < argc; i++) {
+        if (argv[i] && strcmp(argv[i], "-config_path") == 0) {
+            argv[i] = NULL;
+            if (i < argc - 1 && argv[i+1]) {
+                xemu_settings_set_path(argv[i+1]);
+                argv[i+1] = NULL;
+            }
+            break;
+        }
+    }
+
+    if (!xemu_settings_load()) {
+        const char *err_msg = xemu_settings_get_error_message();
+        fprintf(stderr, "%s", err_msg);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
+            "Failed to load xemu config file", err_msg,
+            m_window);
+        SDL_Quit();
+        exit(1);
+    }
+    atexit(xemu_settings_save);
+
     sdl2_display_very_early_init(NULL);
 
     qemu_sem_init(&display_init_sem, 0);
@@ -1527,6 +1539,12 @@ int main(int argc, char **argv)
     qemu_set_current_aio_context(qemu_get_aio_context());
 
     DPRINTF("Main thread: initializing app\n");
+
+    qemu_mutex_lock_main_loop();
+    qemu_mutex_lock_iothread();
+    xemu_input_init();
+    qemu_mutex_unlock_iothread();
+    qemu_mutex_unlock_main_loop();
 
     while (1) {
         sdl2_gl_refresh(&sdl2_console[0].dcl);

@@ -32,6 +32,7 @@
 #include "qemu/fifo8.h"
 #include "ui/xemu-settings.h"
 
+#include "trace.h"
 #include "dsp/dsp.h"
 #include "dsp/dsp_dma.h"
 #include "dsp/dsp_cpu.h"
@@ -296,6 +297,27 @@ void mcpx_apu_debug_toggle_mute(uint16_t v)
     g_dbg_muted_voices[v / 64] ^= (1LL << (v % 64));
 }
 
+static void mcpx_apu_update_dsp_preference(MCPXAPUState *d)
+{
+    static int last_known_preference = -1;
+
+    if (last_known_preference == (int)g_config.audio.use_dsp) {
+        return;
+    }
+
+    if (g_config.audio.use_dsp) {
+        d->mon = MCPX_APU_DEBUG_MON_GP_OR_EP;
+        d->gp.realtime = true;
+        d->ep.realtime = true;
+    } else {
+        d->mon = MCPX_APU_DEBUG_MON_VP;
+        d->gp.realtime = false;
+        d->ep.realtime = false;
+    }
+
+    last_known_preference = g_config.audio.use_dsp;
+}
+
 static float clampf(float v, float min, float max)
 {
     if (v < min) {
@@ -367,9 +389,7 @@ static uint64_t mcpx_apu_read(void *opaque, hwaddr addr, unsigned int size)
         break;
     }
 
-    DPRINTF("mcpx apu: read [0x%" HWADDR_PRIx "] (%s) -> 0x%lx\n", addr,
-            get_reg_str(addr), r);
-
+    trace_mcpx_apu_reg_read(addr, size, r);
     return r;
 }
 
@@ -378,8 +398,7 @@ static void mcpx_apu_write(void *opaque, hwaddr addr, uint64_t val,
 {
     MCPXAPUState *d = opaque;
 
-    DPRINTF("mcpx apu: [0x%" HWADDR_PRIx "] (%s) = 0x%lx\n", addr,
-            get_reg_str(addr), val);
+    trace_mcpx_apu_reg_write(addr, size, val);
 
     switch (addr) {
     case NV_PAPU_ISTS:
@@ -455,7 +474,7 @@ static void fe_method(MCPXAPUState *d, uint32_t method, uint32_t argument)
 {
     unsigned int slot;
 
-    DPRINTF("mcpx fe_method 0x%x 0x%x\n", method, argument);
+    trace_mcpx_apu_method(method, argument);
 
     //assert((d->regs[NV_PAPU_FECTL] & NV_PAPU_FECTL_FEMETHMODE) == 0);
 
@@ -2052,6 +2071,7 @@ static int voice_get_samples(MCPXAPUState *d, uint32_t v, float samples[][2],
 
 static void se_frame(MCPXAPUState *d)
 {
+    mcpx_apu_update_dsp_preference(d);
     mcpx_debug_begin_frame();
     g_dbg.gp_realtime = d->gp.realtime;
     g_dbg.ep_realtime = d->ep.realtime;
@@ -2139,6 +2159,7 @@ static void se_frame(MCPXAPUState *d)
             d->apu_fifo_output[off + i][0] += isamp[2*i];
             d->apu_fifo_output[off + i][1] += isamp[2*i+1];
         }
+
         memset(d->vp.sample_buf, 0, sizeof(d->vp.sample_buf));
         memset(mixbins, 0, sizeof(mixbins));
     }
@@ -2200,6 +2221,15 @@ static void se_frame(MCPXAPUState *d)
         fwrite(d->apu_fifo_output, sizeof(d->apu_fifo_output), 1, fd);
         fclose(fd);
 #endif
+
+        if (0 <= g_config.audio.volume_limit && g_config.audio.volume_limit < 1) {
+            float f = pow(g_config.audio.volume_limit, M_E);
+            for (int i = 0; i < 256; i++) {
+                d->apu_fifo_output[i][0] *= f;
+                d->apu_fifo_output[i][1] *= f;
+            }
+        }
+
         qemu_spin_lock(&d->vp.out_buf_lock);
         int num_bytes_free = fifo8_num_free(&d->vp.out_buf);
         assert(num_bytes_free >= sizeof(d->apu_fifo_output));
@@ -2326,8 +2356,6 @@ static void mcpx_apu_vm_state_change(void *opaque, bool running, RunState state)
 
     if (state == RUN_STATE_SAVE_VM) {
         qemu_mutex_lock(&d->lock);
-    } else if (state == RUN_STATE_RESTORE_VM) {
-        mcpx_apu_reset(d);
     }
 }
 
@@ -2342,6 +2370,7 @@ static int mcpx_apu_post_save(void *opaque)
 static int mcpx_apu_pre_load(void *opaque)
 {
     MCPXAPUState *d = opaque;
+    mcpx_apu_reset(d);
     qemu_mutex_lock(&d->lock);
     return 0;
 }
@@ -2609,7 +2638,8 @@ void mcpx_apu_init(PCIBus *bus, int devfn, MemoryRegion *ram)
     SDL_AudioDeviceID sdl_audio_dev;
     sdl_audio_dev = SDL_OpenAudioDevice(NULL, 0, &sdl_audio_spec, NULL, 0);
     if (sdl_audio_dev == 0) {
-        fprintf(stderr, "SDL_OpenAudioDevice failed\n");
+        fprintf(stderr, "SDL_OpenAudioDevice failed: %s\n", SDL_GetError());
+        assert(!"SDL_OpenAudioDevice failed");
         exit(1);
     }
     SDL_PauseAudioDevice(sdl_audio_dev, 0);
@@ -2627,17 +2657,7 @@ void mcpx_apu_init(PCIBus *bus, int devfn, MemoryRegion *ram)
     /* Until DSP is more performant, a switch to decide whether or not we should
      * use the full audio pipeline or not.
      */
-    int use_dsp;
-    xemu_settings_get_bool(XEMU_SETTINGS_AUDIO_USE_DSP, &use_dsp);
-    if (use_dsp) {
-        d->mon = MCPX_APU_DEBUG_MON_GP_OR_EP;
-        d->gp.realtime = true;
-        d->ep.realtime = true;
-    } else {
-        d->mon = MCPX_APU_DEBUG_MON_VP;
-        d->gp.realtime = false;
-        d->ep.realtime = false;
-    }
+    mcpx_apu_update_dsp_preference(d);
 
     qemu_thread_create(&d->apu_thread, "mcpx.apu_thread", mcpx_apu_frame_thread,
                        d, QEMU_THREAD_JOINABLE);

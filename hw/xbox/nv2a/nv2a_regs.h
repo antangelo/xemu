@@ -448,6 +448,9 @@
 #       define NV_PGRAPH_CONTROL_2_STENCIL_OP_V_INCR                7
 #       define NV_PGRAPH_CONTROL_2_STENCIL_OP_V_DECR                8
 #define NV_PGRAPH_CONTROL_3                              0x00001958
+#   define NV_PGRAPH_CONTROL_3_SHADEMODE                        (1 << 7)
+#       define NV_PGRAPH_CONTROL_3_SHADEMODE_FLAT                   0
+#       define NV_PGRAPH_CONTROL_3_SHADEMODE_SMOOTH                 1
 #   define NV_PGRAPH_CONTROL_3_FOGENABLE                        (1 << 8)
 #   define NV_PGRAPH_CONTROL_3_FOG_MODE                         0x00070000
 #       define NV_PGRAPH_CONTROL_3_FOG_MODE_LINEAR                  0
@@ -489,6 +492,8 @@
 #define NV_PGRAPH_SHADERCTL                              0x00001998
 #define NV_PGRAPH_SHADERPROG                             0x0000199C
 #define NV_PGRAPH_SEMAPHOREOFFSET                        0x000019A0
+#define NV_PGRAPH_SHADOWCTL                              0x000019A4
+#   define NV_PGRAPH_SHADOWCTL_SHADOW_ZFUNC                     0x00000007
 #define NV_PGRAPH_SHADOWZSLOPETHRESHOLD                  0x000019A8
 #define NV_PGRAPH_SPECFOGFACTOR0                         0x000019AC
 #define NV_PGRAPH_SPECFOGFACTOR1                         0x000019B0
@@ -600,6 +605,10 @@
 #define NV_PGRAPH_WINDOWCLIPY5                           0x00001A78
 #define NV_PGRAPH_WINDOWCLIPY6                           0x00001A7C
 #define NV_PGRAPH_WINDOWCLIPY7                           0x00001A80
+#define NV_PGRAPH_ZCOMPRESSOCCLUDE                       0x00001A84
+#   define NV_PGRAPH_ZCOMPRESSOCCLUDE_ZCLAMP_EN                 (1 << 4)
+#       define NV_PGRAPH_ZCOMPRESSOCCLUDE_ZCLAMP_EN_CULL            0
+#       define NV_PGRAPH_ZCOMPRESSOCCLUDE_ZCLAMP_EN_CLAMP           1
 #define NV_PGRAPH_ZSTENCILCLEARVALUE                     0x00001A88
 #define NV_PGRAPH_ZCLIPMIN                               0x00001A90
 #define NV_PGRAPH_ZOFFSETBIAS                            0x00001AA4
@@ -617,6 +626,10 @@
 #define NV_PCRTC_START                                   0x00000800
 #define NV_PCRTC_CONFIG                                  0x00000804
 #define NV_PCRTC_RASTER                                  0x00000808
+
+
+#define NV_PRMCIO_INTERLACE_MODE                         0x00000039
+#   define NV_PRMCIO_INTERLACE_MODE_DISABLED                    0xff
 
 
 #define NV_PVIDEO_INTR                                   0x00000100
@@ -642,6 +655,7 @@
 #   define NV_PVIDEO_POINT_IN_T                               0xFFFE0000
 #define NV_PVIDEO_DS_DX                                  0x00000938
 #define NV_PVIDEO_DT_DY                                  0x00000940
+#   define NV_PVIDEO_DIN_DOUT_UNITY                           0x00100000
 #define NV_PVIDEO_POINT_OUT                              0x00000948
 #   define NV_PVIDEO_POINT_OUT_X                              0x00000FFF
 #   define NV_PVIDEO_POINT_OUT_Y                              0x0FFF0000
@@ -964,6 +978,9 @@
 #       define NV097_SET_STENCIL_OP_V_INVERT                      0x150A
 #       define NV097_SET_STENCIL_OP_V_INCR                        0x8507
 #       define NV097_SET_STENCIL_OP_V_DECR                        0x8508
+#   define NV097_SET_SHADE_MODE                               0x0000037C
+#       define NV097_SET_SHADE_MODE_V_FLAT                        0x1D00
+#       define NV097_SET_SHADE_MODE_V_SMOOTH                      0x1D01
 #   define NV097_SET_POLYGON_OFFSET_SCALE_FACTOR              0x00000384
 #   define NV097_SET_POLYGON_OFFSET_BIAS                      0x00000388
 #   define NV097_SET_FRONT_POLYGON_MODE                       0x0000038C
@@ -982,6 +999,7 @@
 #       define NV097_SET_FRONT_FACE_V_CCW                          0x901
 #   define NV097_SET_NORMALIZATION_ENABLE                     0x000003A4
 #   define NV097_SET_MATERIAL_EMISSION                        0x000003A8
+#   define NV097_SET_MATERIAL_ALPHA                           0x000003B4
 #   define NV097_SET_LIGHT_ENABLE_MASK                        0x000003BC
 #           define NV097_SET_LIGHT_ENABLE_MASK_LIGHT0_OFF           0
 #           define NV097_SET_LIGHT_ENABLE_MASK_LIGHT0_INFINITE      1
@@ -1040,6 +1058,30 @@
 #   define NV097_SET_LIGHT_LOCAL_POSITION                     0x0000105C
 #   define NV097_SET_LIGHT_LOCAL_ATTENUATION                  0x00001068
 #   define NV097_SET_VERTEX4F                                 0x00001518
+#   define NV097_SET_NORMAL3F                                 0x00001530
+#   define NV097_SET_NORMAL3S                                 0x00001540
+#   define NV097_SET_DIFFUSE_COLOR4F                          0x00001550
+#   define NV097_SET_DIFFUSE_COLOR3F                          0x00001560
+#   define NV097_SET_DIFFUSE_COLOR4UB                         0x0000156C
+#   define NV097_SET_SPECULAR_COLOR4F                         0x00001570
+#   define NV097_SET_SPECULAR_COLOR3F                         0x00001580
+#   define NV097_SET_SPECULAR_COLOR4UB                        0x0000158C
+#   define NV097_SET_TEXCOORD0_2F                             0x00001590
+#   define NV097_SET_TEXCOORD0_4F                             0x000015A0
+#   define NV097_SET_TEXCOORD0_2S                             0x00001598
+#   define NV097_SET_TEXCOORD0_4S                             0x000015B0
+#   define NV097_SET_TEXCOORD1_2F                             0x000015B8
+#   define NV097_SET_TEXCOORD1_4F                             0x000015C8
+#   define NV097_SET_TEXCOORD1_2S                             0x000015C0
+#   define NV097_SET_TEXCOORD1_4S                             0x000015D8
+#   define NV097_SET_TEXCOORD2_2F                             0x000015E0
+#   define NV097_SET_TEXCOORD2_4F                             0x000015F0
+#   define NV097_SET_TEXCOORD2_2S                             0x000015E8
+#   define NV097_SET_TEXCOORD2_4S                             0x00001600
+#   define NV097_SET_TEXCOORD3_2F                             0x00001608
+#   define NV097_SET_TEXCOORD3_4F                             0x00001620
+#   define NV097_SET_TEXCOORD3_2S                             0x00001610
+#   define NV097_SET_TEXCOORD3_4S                             0x00001630
 #   define NV097_SET_VERTEX_DATA_ARRAY_OFFSET                 0x00001720
 #   define NV097_SET_VERTEX_DATA_ARRAY_FORMAT                 0x00001760
 #       define NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE            0x0000000F
@@ -1127,7 +1169,8 @@
 #           define NV097_SET_TEXTURE_FORMAT_COLOR_SZ_G8B8           0x28
 #           define NV097_SET_TEXTURE_FORMAT_COLOR_SZ_R8B8           0x29
 #           define NV097_SET_TEXTURE_FORMAT_COLOR_SZ_DEPTH_Y16_FIXED 0x2C
-# define NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_X8_Y24_FIXED 0x2E
+#           define NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_X8_Y24_FIXED 0x2E
+#           define NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_X8_Y24_FLOAT 0x2F
 #           define NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_Y16_FIXED 0x30
 #           define NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_DEPTH_Y16_FLOAT 0x31
 #           define NV097_SET_TEXTURE_FORMAT_COLOR_LU_IMAGE_Y16      0x35
@@ -1173,6 +1216,10 @@
 #   define NV097_SET_TEXTURE_SET_BUMP_ENV_OFFSET              0x00001B3C
 #   define NV097_SET_SEMAPHORE_OFFSET                         0x00001D6C
 #   define NV097_BACK_END_WRITE_SEMAPHORE_RELEASE             0x00001D70
+#   define NV097_SET_ZMIN_MAX_CONTROL                         0x00001D78
+#       define NV097_SET_ZMIN_MAX_CONTROL_ZCLAMP_EN               0x000000F0
+#       define NV097_SET_ZMIN_MAX_CONTROL_ZCLAMP_EN_CULL              0
+#       define NV097_SET_ZMIN_MAX_CONTROL_ZCLAMP_EN_CLAMP             1
 #   define NV097_SET_ZSTENCIL_CLEAR_VALUE                     0x00001D8C
 #   define NV097_SET_COLOR_CLEAR_VALUE                        0x00001D90
 #   define NV097_CLEAR_SURFACE                                0x00001D94
@@ -1189,9 +1236,20 @@
 #   define NV097_SET_COMBINER_COLOR_OCW                       0x00001E40
 #   define NV097_SET_COMBINER_CONTROL                         0x00001E60
 #   define NV097_SET_SHADOW_ZSLOPE_THRESHOLD                  0x00001E68
+#   define NV097_SET_SHADOW_DEPTH_FUNC                        0x00001E6C
+#       define NV097_SET_SHADOW_DEPTH_FUNC_NEVER                0x00000000
+#       define NV097_SET_SHADOW_DEPTH_FUNC_LESS                 0x00000001
+#       define NV097_SET_SHADOW_DEPTH_FUNC_EQUAL                0x00000002
+#       define NV097_SET_SHADOW_DEPTH_FUNC_LEQUAL               0x00000003
+#       define NV097_SET_SHADOW_DEPTH_FUNC_GREATER              0x00000004
+#       define NV097_SET_SHADOW_DEPTH_FUNC_NOTEQUAL             0x00000005
+#       define NV097_SET_SHADOW_DEPTH_FUNC_GEQUAL               0x00000006
+#       define NV097_SET_SHADOW_DEPTH_FUNC_ALWAYS               0x00000007
 #   define NV097_SET_SHADER_STAGE_PROGRAM                     0x00001E70
 #   define NV097_SET_DOT_RGBMAPPING                           0X00001E74
 #   define NV097_SET_SHADER_OTHER_STAGE_INPUT                 0x00001E78
+#   define NV097_SET_TRANSFORM_DATA                           0x00001E80
+#   define NV097_LAUNCH_TRANSFORM_PROGRAM                     0x00001E90
 #   define NV097_SET_TRANSFORM_EXECUTION_MODE                 0x00001E94
 #       define NV097_SET_TRANSFORM_EXECUTION_MODE_MODE            0x00000003
 #       define NV097_SET_TRANSFORM_EXECUTION_MODE_RANGE_MODE      0xFFFFFFFC

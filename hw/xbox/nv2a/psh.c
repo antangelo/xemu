@@ -290,7 +290,17 @@ static MString* get_var(struct PixelShader *ps, int reg, bool is_dest)
         return mstring_from_str("r1");
     case PS_REGISTER_V1R0_SUM:
         add_var_ref(ps, "r0");
-        return mstring_from_str("vec4(v1.rgb + r0.rgb, 0.0)");
+        if (ps->final_input.clamp_sum) {
+            return mstring_from_fmt(
+                    "clamp(vec4(%s.rgb + %s.rgb, 0.0), 0.0, 1.0)",
+                    ps->final_input.inv_v1 ? "(1.0 - v1)" : "v1",
+                    ps->final_input.inv_r0 ? "(1.0 - r0)" : "r0");
+        } else {
+            return mstring_from_fmt(
+                    "vec4(%s.rgb + %s.rgb, 0.0)",
+                    ps->final_input.inv_v1 ? "(1.0 - v1)" : "v1",
+                    ps->final_input.inv_r0 ? "(1.0 - r0)" : "r0");
+        }
     case PS_REGISTER_EF_PROD:
         return mstring_from_fmt("vec4(%s * %s, 0.0)",
                                 mstring_get_str(ps->varE),
@@ -400,10 +410,12 @@ static MString* get_output(MString *reg, int mapping)
 }
 
 // Add the GLSL code for a stage
-static void add_stage_code(struct PixelShader *ps,
-                           struct InputVarInfo input, struct OutputInfo output,
-                           const char *write_mask, bool is_alpha)
+static MString* add_stage_code(struct PixelShader *ps,
+                               struct InputVarInfo input,
+                               struct OutputInfo output,
+                               const char *write_mask, bool is_alpha)
 {
+    MString *ret = mstring_new();
     MString *a = get_input_var(ps, input.a, is_alpha);
     MString *b = get_input_var(ps, input.b, is_alpha);
     MString *c = get_input_var(ps, input.c, is_alpha);
@@ -436,11 +448,16 @@ static void add_stage_code(struct PixelShader *ps,
     MString *cd_mapping = get_output(cd, output.mapping);
     MString *ab_dest = get_var(ps, output.ab, true);
     MString *cd_dest = get_var(ps, output.cd, true);
-    MString *sum_dest = get_var(ps, output.muxsum, true);
+    MString *muxsum_dest = get_var(ps, output.muxsum, true);
+
+    bool assign_ab = false;
+    bool assign_cd = false;
+    bool assign_muxsum = false;
 
     if (mstring_get_length(ab_dest)) {
-        mstring_append_fmt(ps->code, "%s.%s = clamp(%s(%s), -1.0, 1.0);\n",
-                           mstring_get_str(ab_dest), write_mask, caster, mstring_get_str(ab_mapping));
+        mstring_append_fmt(ps->code, "ab.%s = clamp(%s(%s), -1.0, 1.0);\n",
+                           write_mask, caster, mstring_get_str(ab_mapping));
+        assign_ab = true;
     } else {
         mstring_unref(ab_dest);
         mstring_ref(ab_mapping);
@@ -448,35 +465,56 @@ static void add_stage_code(struct PixelShader *ps,
     }
 
     if (mstring_get_length(cd_dest)) {
-        mstring_append_fmt(ps->code, "%s.%s = clamp(%s(%s), -1.0, 1.0);\n",
-                           mstring_get_str(cd_dest), write_mask, caster, mstring_get_str(cd_mapping));
+        mstring_append_fmt(ps->code, "cd.%s = clamp(%s(%s), -1.0, 1.0);\n",
+                           write_mask, caster, mstring_get_str(cd_mapping));
+        assign_cd = true;
     } else {
         mstring_unref(cd_dest);
         mstring_ref(cd_mapping);
         cd_dest = cd_mapping;
     }
 
-    if (!is_alpha && output.flags & PS_COMBINEROUTPUT_AB_BLUE_TO_ALPHA) {
-        mstring_append_fmt(ps->code, "%s.a = %s.b;\n",
-                           mstring_get_str(ab_dest), mstring_get_str(ab_dest));
-    }
-    if (!is_alpha && output.flags & PS_COMBINEROUTPUT_CD_BLUE_TO_ALPHA) {
-        mstring_append_fmt(ps->code, "%s.a = %s.b;\n",
-                           mstring_get_str(cd_dest), mstring_get_str(cd_dest));
-    }
-
-    MString *sum;
+    MString *muxsum;
     if (output.muxsum_op == PS_COMBINEROUTPUT_AB_CD_SUM) {
-        sum = mstring_from_fmt("(%s + %s)", mstring_get_str(ab), mstring_get_str(cd));
+        muxsum = mstring_from_fmt("(%s + %s)", mstring_get_str(ab),
+                                  mstring_get_str(cd));
     } else {
-        sum = mstring_from_fmt("((r0.a >= 0.5) ? %s(%s) : %s(%s))",
-                               caster, mstring_get_str(cd), caster, mstring_get_str(ab));
+        muxsum = mstring_from_fmt("((%s) ? %s(%s) : %s(%s))",
+                                  (ps->flags & PS_COMBINERCOUNT_MUX_MSB) ?
+                                      "r0.a >= 0.5" :
+                                      "(uint(r0.a * 255.0) & 1u) == 1u",
+                                  caster, mstring_get_str(cd), caster,
+                                  mstring_get_str(ab));
     }
 
-    MString *sum_mapping = get_output(sum, output.mapping);
-    if (mstring_get_length(sum_dest)) {
-        mstring_append_fmt(ps->code, "%s.%s = clamp(%s(%s), -1.0, 1.0);\n",
-                           mstring_get_str(sum_dest), write_mask, caster, mstring_get_str(sum_mapping));
+    MString *muxsum_mapping = get_output(muxsum, output.mapping);
+    if (mstring_get_length(muxsum_dest)) {
+        mstring_append_fmt(ps->code, "mux_sum.%s = clamp(%s(%s), -1.0, 1.0);\n",
+                           write_mask, caster, mstring_get_str(muxsum_mapping));
+        assign_muxsum = true;
+    }
+
+    if (assign_ab) {
+        mstring_append_fmt(ret, "%s.%s = ab.%s;\n",
+                           mstring_get_str(ab_dest), write_mask, write_mask);
+
+        if (!is_alpha && output.flags & PS_COMBINEROUTPUT_AB_BLUE_TO_ALPHA) {
+            mstring_append_fmt(ret, "%s.a = ab.b;\n",
+                               mstring_get_str(ab_dest));
+        }
+    }
+    if (assign_cd) {
+        mstring_append_fmt(ret, "%s.%s = cd.%s;\n",
+                           mstring_get_str(cd_dest), write_mask, write_mask);
+
+        if (!is_alpha && output.flags & PS_COMBINEROUTPUT_CD_BLUE_TO_ALPHA) {
+            mstring_append_fmt(ret, "%s.a = cd.b;\n",
+                               mstring_get_str(cd_dest));
+        }
+    }
+    if (assign_muxsum) {
+        mstring_append_fmt(ret, "%s.%s = mux_sum.%s;\n",
+                           mstring_get_str(muxsum_dest), write_mask, write_mask);
     }
 
     mstring_unref(a);
@@ -489,9 +527,11 @@ static void add_stage_code(struct PixelShader *ps,
     mstring_unref(cd_mapping);
     mstring_unref(ab_dest);
     mstring_unref(cd_dest);
-    mstring_unref(sum_dest);
-    mstring_unref(sum);
-    mstring_unref(sum_mapping);
+    mstring_unref(muxsum_dest);
+    mstring_unref(muxsum);
+    mstring_unref(muxsum_mapping);
+
+    return ret;
 }
 
 // Add code for the final combiner stage
@@ -522,14 +562,137 @@ static void add_final_stage_code(struct PixelShader *ps, struct FCInputInfo fina
     ps->varE = ps->varF = NULL;
 }
 
+static const char sampler2D[] = "sampler2D";
+static const char sampler3D[] = "sampler3D";
+static const char samplerCube[] = "samplerCube";
+static const char sampler2DRect[] = "sampler2DRect";
+
+static const char* get_sampler_type(enum PS_TEXTUREMODES mode, const PshState *state, int i)
+{
+    switch (mode) {
+    default:
+    case PS_TEXTUREMODES_NONE:
+        return NULL;
+
+    case PS_TEXTUREMODES_PROJECT2D:
+        return state->rect_tex[i] ? sampler2DRect : sampler2D;
+
+    case PS_TEXTUREMODES_BUMPENVMAP:
+    case PS_TEXTUREMODES_BUMPENVMAP_LUM:
+    case PS_TEXTUREMODES_DOT_ST:
+        if (state->shadow_map[i]) {
+            fprintf(stderr, "Shadow map support not implemented for mode %d\n", mode);
+            assert(!"Shadow map support not implemented for this mode");
+        }
+        return state->rect_tex[i] ? sampler2DRect : sampler2D;
+
+    case PS_TEXTUREMODES_PROJECT3D:
+    case PS_TEXTUREMODES_DOT_STR_3D:
+        if (state->shadow_map[i]) {
+            return state->rect_tex[i] ? sampler2DRect : sampler2D;
+        }
+        return sampler3D;
+
+    case PS_TEXTUREMODES_CUBEMAP:
+    case PS_TEXTUREMODES_DOT_RFLCT_DIFF:
+    case PS_TEXTUREMODES_DOT_RFLCT_SPEC:
+    case PS_TEXTUREMODES_DOT_STR_CUBE:
+        if (state->shadow_map[i]) {
+            fprintf(stderr, "Shadow map support not implemented for mode %d\n", mode);
+            assert(!"Shadow map support not implemented for this mode");
+        }
+        return samplerCube;
+
+    case PS_TEXTUREMODES_DPNDNT_AR:
+    case PS_TEXTUREMODES_DPNDNT_GB:
+        if (state->shadow_map[i]) {
+            fprintf(stderr, "Shadow map support not implemented for mode %d\n", mode);
+            assert(!"Shadow map support not implemented for this mode");
+        }
+        return sampler2D;
+    }
+}
+
+static const char *shadow_comparison_map[] = {
+    [SHADOW_DEPTH_FUNC_LESS] = "<",
+    [SHADOW_DEPTH_FUNC_EQUAL] = "==",
+    [SHADOW_DEPTH_FUNC_LEQUAL] = "<=",
+    [SHADOW_DEPTH_FUNC_GREATER] = ">",
+    [SHADOW_DEPTH_FUNC_NOTEQUAL] = "!=",
+    [SHADOW_DEPTH_FUNC_GEQUAL] = ">=",
+};
+
+static void psh_append_shadowmap(const struct PixelShader *ps, int i, bool compare_z, MString *vars)
+{
+    if (ps->state.shadow_depth_func == SHADOW_DEPTH_FUNC_NEVER) {
+        mstring_append_fmt(vars, "vec4 t%d = vec4(0.0);\n", i);
+        return;
+    }
+
+    if (ps->state.shadow_depth_func == SHADOW_DEPTH_FUNC_ALWAYS) {
+        mstring_append_fmt(vars, "vec4 t%d = vec4(1.0);\n", i);
+        return;
+    }
+
+    mstring_append_fmt(vars,
+                       "pT%d.xy *= texScale%d;\n"
+                       "vec4 t%d_depth = textureProj(texSamp%d, pT%d.xyw);\n",
+                       i, i, i, i, i);
+
+    const char *comparison = shadow_comparison_map[ps->state.shadow_depth_func];
+
+    // Depth.y != 0 indicates 24 bit; depth.z != 0 indicates float.
+    if (compare_z) {
+        mstring_append_fmt(
+            vars,
+            "float t%d_max_depth;\n"
+            "if (t%d_depth.y > 0) {\n"
+            "  t%d_max_depth = 0xFFFFFF;\n"
+            "} else {\n"
+            "  t%d_max_depth = t%d_depth.z > 0 ? 511.9375 : 0xFFFF;\n"
+            "}\n"
+            "t%d_depth.x *= t%d_max_depth;\n"
+            "pT%d.z = clamp(pT%d.z / pT%d.w, 0, t%d_max_depth);\n"
+            "vec4 t%d = vec4(t%d_depth.x %s pT%d.z ? 1.0 : 0.0);\n",
+            i, i, i, i, i,
+            i, i, i, i, i, i,
+            i, i, comparison, i);
+    } else {
+        mstring_append_fmt(
+            vars,
+            "vec4 t%d = vec4(t%d_depth.x %s 0.0 ? 1.0 : 0.0);\n",
+            i, i, comparison);
+    }
+}
+
+// Adjust the s, t coordinates in the given VAR to account for the 4 texel
+// border supported by the hardware.
+static void apply_border_adjustment(const struct PixelShader *ps, MString *vars, int tex_index, const char *var_template)
+{
+    int i = tex_index;
+    if (ps->state.border_logical_size[i][0] == 0.0f) {
+        return;
+    }
+
+    char var_name[32] = {0};
+    snprintf(var_name, sizeof(var_name), var_template, i);
+
+    mstring_append_fmt(
+        vars,
+        "vec3 t%dLogicalSize = vec3(%f, %f, %f);\n"
+        "%s.xyz = (%s.xyz * t%dLogicalSize + vec3(4, 4, 4)) * vec3(%f, %f, %f);\n",
+        i, ps->state.border_logical_size[i][0], ps->state.border_logical_size[i][1], ps->state.border_logical_size[i][2],
+        var_name, var_name, i, ps->state.border_inv_real_size[i][0], ps->state.border_inv_real_size[i][1], ps->state.border_inv_real_size[i][2]);
+}
+
 static MString* psh_convert(struct PixelShader *ps)
 {
     int i;
 
     MString *preflight = mstring_new();
-    mstring_append(preflight, STRUCT_VERTEX_DATA);
-    mstring_append(preflight, "noperspective in VertexData g_vtx;\n");
-    mstring_append(preflight, "#define vtx g_vtx\n");
+    mstring_append(preflight, ps->state.smooth_shading ?
+                                  STRUCT_VERTEX_DATA_IN_SMOOTH :
+                                  STRUCT_VERTEX_DATA_IN_FLAT);
     mstring_append(preflight, "\n");
     mstring_append(preflight, "out vec4 fragColor;\n");
     mstring_append(preflight, "\n");
@@ -616,10 +779,12 @@ static MString* psh_convert(struct PixelShader *ps)
     if (!ps->state.window_clip_exclusive) {
         mstring_append(clip, "bool clipContained = false;\n");
     }
-    mstring_append(clip, "for (int i = 0; i < 8; i++) {\n"
-                         "  bvec4 clipTest = bvec4(lessThan(gl_FragCoord.xy-0.5, clipRegion[i].xy),\n"
-                         "                         greaterThan(gl_FragCoord.xy-0.5, clipRegion[i].zw));\n"
-                         "  if (!any(clipTest)) {\n");
+    mstring_append(clip, "vec2 coord = gl_FragCoord.xy - 0.5;\n"
+                         "for (int i = 0; i < 8; i++) {\n"
+                         "  bool outside = any(bvec4(\n"
+                         "      lessThan(coord, vec2(clipRegion[i].xy)),\n"
+                         "      greaterThanEqual(coord, vec2(clipRegion[i].zw))));\n"
+                         "  if (!outside) {\n");
     if (ps->state.window_clip_exclusive) {
         mstring_append(clip, "    discard;\n");
     } else {
@@ -636,29 +801,39 @@ static MString* psh_convert(struct PixelShader *ps)
 
     /* calculate perspective-correct inputs */
     MString *vars = mstring_new();
-    mstring_append(vars, "vec4 pD0 = vtx.D0 / vtx.inv_w;\n");
-    mstring_append(vars, "vec4 pD1 = vtx.D1 / vtx.inv_w;\n");
-    mstring_append(vars, "vec4 pB0 = vtx.B0 / vtx.inv_w;\n");
-    mstring_append(vars, "vec4 pB1 = vtx.B1 / vtx.inv_w;\n");
-    mstring_append(vars, "vec4 pFog = vec4(fogColor.rgb, clamp(vtx.Fog / vtx.inv_w, 0.0, 1.0));\n");
-    mstring_append(vars, "vec4 pT0 = vtx.T0 / vtx.inv_w;\n");
-    mstring_append(vars, "vec4 pT1 = vtx.T1 / vtx.inv_w;\n");
-    mstring_append(vars, "vec4 pT2 = vtx.T2 / vtx.inv_w;\n");
+    if (ps->state.smooth_shading) {
+        mstring_append(vars, "vec4 pD0 = vtxD0 / vtx_inv_w;\n");
+        mstring_append(vars, "vec4 pD1 = vtxD1 / vtx_inv_w;\n");
+        mstring_append(vars, "vec4 pB0 = vtxB0 / vtx_inv_w;\n");
+        mstring_append(vars, "vec4 pB1 = vtxB1 / vtx_inv_w;\n");
+    } else {
+        mstring_append(vars, "vec4 pD0 = vtxD0 / vtx_inv_w_flat;\n");
+        mstring_append(vars, "vec4 pD1 = vtxD1 / vtx_inv_w_flat;\n");
+        mstring_append(vars, "vec4 pB0 = vtxB0 / vtx_inv_w_flat;\n");
+        mstring_append(vars, "vec4 pB1 = vtxB1 / vtx_inv_w_flat;\n");
+    }
+    mstring_append(vars, "vec4 pFog = vec4(fogColor.rgb, clamp(vtxFog / vtx_inv_w, 0.0, 1.0));\n");
+    mstring_append(vars, "vec4 pT0 = vtxT0 / vtx_inv_w;\n");
+    mstring_append(vars, "vec4 pT1 = vtxT1 / vtx_inv_w;\n");
+    mstring_append(vars, "vec4 pT2 = vtxT2 / vtx_inv_w;\n");
     if (ps->state.point_sprite) {
         assert(!ps->state.rect_tex[3]);
         mstring_append(vars, "vec4 pT3 = vec4(gl_PointCoord, 1.0, 1.0);\n");
     } else {
-        mstring_append(vars, "vec4 pT3 = vtx.T3 / vtx.inv_w;\n");
+        mstring_append(vars, "vec4 pT3 = vtxT3 / vtx_inv_w;\n");
     }
     mstring_append(vars, "\n");
     mstring_append(vars, "vec4 v0 = pD0;\n");
     mstring_append(vars, "vec4 v1 = pD1;\n");
+    mstring_append(vars, "vec4 ab;\n");
+    mstring_append(vars, "vec4 cd;\n");
+    mstring_append(vars, "vec4 mux_sum;\n");
 
     ps->code = mstring_new();
 
     for (i = 0; i < 4; i++) {
 
-        const char *sampler_type = NULL;
+        const char *sampler_type = get_sampler_type(ps->tex_modes[i], &ps->state, i);
 
         assert(ps->dot_map[i] < 8);
         const char *dotmap_func = dotmap_funcs[ps->dot_map[i]];
@@ -672,36 +847,44 @@ static MString* psh_convert(struct PixelShader *ps)
                                i);
             break;
         case PS_TEXTUREMODES_PROJECT2D: {
-            sampler_type = ps->state.rect_tex[i] ? "sampler2DRect" : "sampler2D";
-            const char *lookup = "textureProj";
-            if ((ps->state.conv_tex[i] == CONVOLUTION_FILTER_GAUSSIAN)
-                || (ps->state.conv_tex[i] == CONVOLUTION_FILTER_QUINCUNX)) {
-                /* FIXME: Quincunx looks better than Linear and costs less than
-                 * Gaussian, but Gaussian should be plenty fast so use it for
-                 * now.
-                 */
-                if (ps->state.rect_tex[i]) {
-                    lookup = "gaussianFilter2DRectProj";
-                } else {
-                    NV2A_UNIMPLEMENTED("Convolution for 2D textures");
+            if (ps->state.shadow_map[i]) {
+                psh_append_shadowmap(ps, i, false, vars);
+            } else {
+                const char *lookup = "textureProj";
+                if ((ps->state.conv_tex[i] == CONVOLUTION_FILTER_GAUSSIAN)
+                    || (ps->state.conv_tex[i] == CONVOLUTION_FILTER_QUINCUNX)) {
+                    /* FIXME: Quincunx looks better than Linear and costs less than
+                     * Gaussian, but Gaussian should be plenty fast so use it for
+                     * now.
+                     */
+                    if (ps->state.rect_tex[i]) {
+                        lookup = "gaussianFilter2DRectProj";
+                    } else {
+                        NV2A_UNIMPLEMENTED("Convolution for 2D textures");
+                    }
                 }
+                apply_border_adjustment(ps, vars, i, "pT%d");
+                mstring_append_fmt(vars, "pT%d.xy = texScale%d * pT%d.xy;\n", i, i, i);
+                mstring_append_fmt(vars, "vec4 t%d = %s(texSamp%d, pT%d.xyw);\n",
+                                   i, lookup, i, i);
             }
-            mstring_append_fmt(vars, "pT%d.xy = texScale%d * pT%d.xy;\n", i, i, i);
-            mstring_append_fmt(vars, "vec4 t%d = %s(texSamp%d, pT%d.xyw);\n",
-                               i, lookup, i, i);
             break;
         }
         case PS_TEXTUREMODES_PROJECT3D:
-            sampler_type = "sampler3D";
-            mstring_append_fmt(vars, "vec4 t%d = textureProj(texSamp%d, pT%d.xyzw);\n",
-                               i, i, i);
+            if (ps->state.shadow_map[i]) {
+                psh_append_shadowmap(ps, i, true, vars);
+            } else {
+                apply_border_adjustment(ps, vars, i, "pT%d");
+                mstring_append_fmt(vars, "vec4 t%d = textureProj(texSamp%d, pT%d.xyzw);\n",
+                                   i, i, i);
+            }
             break;
         case PS_TEXTUREMODES_CUBEMAP:
-            sampler_type = "samplerCube";
             mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, pT%d.xyz / pT%d.w);\n",
                                i, i, i, i);
             break;
         case PS_TEXTUREMODES_PASSTHRU:
+            assert(ps->state.border_logical_size[i][0] == 0.0f && "Unexpected border texture on passthru");
             mstring_append_fmt(vars, "vec4 t%d = pT%d;\n", i, i);
             break;
         case PS_TEXTUREMODES_CLIPPLANE: {
@@ -717,7 +900,6 @@ static MString* psh_convert(struct PixelShader *ps)
         }
         case PS_TEXTUREMODES_BUMPENVMAP:
             assert(i >= 1);
-            sampler_type = ps->state.rect_tex[i] ? "sampler2DRect" : "sampler2D";
             mstring_append_fmt(preflight, "uniform mat2 bumpMat%d;\n", i);
 
             if (ps->state.snorm_tex[ps->input_tex[i]]) {
@@ -737,7 +919,6 @@ static MString* psh_convert(struct PixelShader *ps)
             break;
         case PS_TEXTUREMODES_BUMPENVMAP_LUM:
             assert(i >= 1);
-            sampler_type = ps->state.rect_tex[i] ? "sampler2DRect" : "sampler2D";
             mstring_append_fmt(preflight, "uniform float bumpScale%d;\n", i);
             mstring_append_fmt(preflight, "uniform float bumpOffset%d;\n", i);
             mstring_append_fmt(preflight, "uniform mat2 bumpMat%d;\n", i);
@@ -767,12 +948,15 @@ static MString* psh_convert(struct PixelShader *ps)
             break;
         case PS_TEXTUREMODES_DOT_ST:
             assert(i >= 2);
-            sampler_type = ps->state.rect_tex[i] ? "sampler2DRect" : "sampler2D";
             mstring_append_fmt(vars, "/* PS_TEXTUREMODES_DOT_ST */\n");
-            mstring_append_fmt(vars, "float dot%d = dot(pT%d.xyz, %s(t%d.rgb));\n",
-                i, i, dotmap_func, ps->input_tex[i]);
-            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, texScale%d * vec2(dot%d, dot%d));\n",
-                i, i, i, i-1, i);
+            mstring_append_fmt(vars,
+               "float dot%d = dot(pT%d.xyz, %s(t%d.rgb));\n"
+               "vec2 dotST%d = vec2(dot%d, dot%d);\n",
+                i, i, dotmap_func, ps->input_tex[i], i, i-1, i);
+
+            apply_border_adjustment(ps, vars, i, "dotST%d");
+            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, texScale%d * dotST%d);\n",
+                i, i, i, i);
             break;
         case PS_TEXTUREMODES_DOT_ZW:
             assert(i >= 2);
@@ -784,7 +968,6 @@ static MString* psh_convert(struct PixelShader *ps)
             break;
         case PS_TEXTUREMODES_DOT_RFLCT_DIFF:
             assert(i == 2);
-            sampler_type = "samplerCube";
             mstring_append_fmt(vars, "/* PS_TEXTUREMODES_DOT_RFLCT_DIFF */\n");
             mstring_append_fmt(vars, "float dot%d = dot(pT%d.xyz, %s(t%d.rgb));\n",
                 i, i, dotmap_func, ps->input_tex[i]);
@@ -793,12 +976,12 @@ static MString* psh_convert(struct PixelShader *ps)
                 i, i+1, dotmap_funcs[ps->dot_map[i+1]], ps->input_tex[i+1]);
             mstring_append_fmt(vars, "vec3 n_%d = vec3(dot%d, dot%d, dot%d_n);\n",
                 i, i-1, i, i);
+            apply_border_adjustment(ps, vars, i, "n_%d");
             mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, n_%d);\n",
                 i, i, i);
             break;
         case PS_TEXTUREMODES_DOT_RFLCT_SPEC:
             assert(i == 3);
-            sampler_type = "samplerCube";
             mstring_append_fmt(vars, "/* PS_TEXTUREMODES_DOT_RFLCT_SPEC */\n");
             mstring_append_fmt(vars, "float dot%d = dot(pT%d.xyz, %s(t%d.rgb));\n",
                 i, i, dotmap_func, ps->input_tex[i]);
@@ -808,40 +991,49 @@ static MString* psh_convert(struct PixelShader *ps)
                 i, i-2, i-1, i);
             mstring_append_fmt(vars, "vec3 rv_%d = 2*n_%d*dot(n_%d,e_%d)/dot(n_%d,n_%d) - e_%d;\n",
                 i, i, i, i, i, i, i);
+            apply_border_adjustment(ps, vars, i, "rv_%d");
             mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, rv_%d);\n",
                 i, i, i);
             break;
         case PS_TEXTUREMODES_DOT_STR_3D:
             assert(i == 3);
-            sampler_type = "sampler3D";
             mstring_append_fmt(vars, "/* PS_TEXTUREMODES_DOT_STR_3D */\n");
-            mstring_append_fmt(vars, "float dot%d = dot(pT%d.xyz, %s(t%d.rgb));\n",
-                i, i, dotmap_func, ps->input_tex[i]);
-            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, vec3(dot%d, dot%d, dot%d));\n",
-                i, i, i-2, i-1, i);
+            mstring_append_fmt(vars,
+               "float dot%d = dot(pT%d.xyz, %s(t%d.rgb));\n"
+               "vec3 dotSTR%d = vec3(dot%d, dot%d, dot%d);\n",
+                i, i, dotmap_func, ps->input_tex[i],
+                i, i-2, i-1, i);
+
+            apply_border_adjustment(ps, vars, i, "dotSTR%d");
+            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, dotSTR%d);\n",
+                i, i, i);
             break;
         case PS_TEXTUREMODES_DOT_STR_CUBE:
             assert(i == 3);
-            sampler_type = "samplerCube";
             mstring_append_fmt(vars, "/* PS_TEXTUREMODES_DOT_STR_CUBE */\n");
             mstring_append_fmt(vars, "float dot%d = dot(pT%d.xyz, %s(t%d.rgb));\n",
                 i, i, dotmap_func, ps->input_tex[i]);
-            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, vec3(dot%d, dot%d, dot%d));\n",
-                i, i, i-2, i-1, i);
+            mstring_append_fmt(vars, "vec3 dotSTR%dCube = vec3(dot%d, dot%d, dot%d);\n",
+                               i, i-2, i-1, i);
+            apply_border_adjustment(ps, vars, i, "dotSTR%dCube");
+            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, dotSTR%dCube);\n",
+                i, i, i);
             break;
         case PS_TEXTUREMODES_DPNDNT_AR:
             assert(i >= 1);
             assert(!ps->state.rect_tex[i]);
-            sampler_type = "sampler2D";
-            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, t%d.ar);\n",
-                i, i, ps->input_tex[i]);
+            mstring_append_fmt(vars, "vec2 t%dAR = t%d.ar;\n", i, ps->input_tex[i]);
+            apply_border_adjustment(ps, vars, i, "t%dAR");
+            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, t%dAR);\n",
+                i, i, i);
             break;
         case PS_TEXTUREMODES_DPNDNT_GB:
             assert(i >= 1);
             assert(!ps->state.rect_tex[i]);
-            sampler_type = "sampler2D";
-            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, t%d.gb);\n",
-                i, i, ps->input_tex[i]);
+            mstring_append_fmt(vars, "vec2 t%dGB = t%d.gb;\n", i, ps->input_tex[i]);
+            apply_border_adjustment(ps, vars, i, "t%dGB");
+            mstring_append_fmt(vars, "vec4 t%d = texture(texSamp%d, t%dGB);\n",
+                i, i, i);
             break;
         case PS_TEXTUREMODES_DOTPRODUCT:
             assert(i == 1 || i == 2);
@@ -877,8 +1069,13 @@ static MString* psh_convert(struct PixelShader *ps)
     for (i = 0; i < ps->num_stages; i++) {
         ps->cur_stage = i;
         mstring_append_fmt(ps->code, "// Stage %d\n", i);
-        add_stage_code(ps, ps->stage[i].rgb_input, ps->stage[i].rgb_output, "rgb", false);
-        add_stage_code(ps, ps->stage[i].alpha_input, ps->stage[i].alpha_output, "a", true);
+        MString* color = add_stage_code(ps, ps->stage[i].rgb_input, ps->stage[i].rgb_output, "rgb", false);
+        MString* alpha = add_stage_code(ps, ps->stage[i].alpha_input, ps->stage[i].alpha_output, "a", true);
+
+        mstring_append(ps->code, mstring_get_str(color));
+        mstring_append(ps->code, mstring_get_str(alpha));
+        mstring_unref(color);
+        mstring_unref(alpha);
     }
 
     if (ps->final_input.enabled) {
@@ -1021,8 +1218,6 @@ MString *psh_translate(const PshState state)
         ps.final_input.inv_v1 = flags & PS_FINALCOMBINERSETTING_COMPLEMENT_V1;
         ps.final_input.inv_r0 = flags & PS_FINALCOMBINERSETTING_COMPLEMENT_R0;
     }
-
-
 
     return psh_convert(&ps);
 }

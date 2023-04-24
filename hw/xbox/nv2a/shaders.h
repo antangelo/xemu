@@ -21,15 +21,17 @@
 #ifndef HW_NV2A_SHADERS_H
 #define HW_NV2A_SHADERS_H
 
+#include "qemu/thread.h"
 #include "qapi/qmp/qstring.h"
 #include "gl/gloffscreen.h"
 
 #include "nv2a_regs.h"
 #include "vsh.h"
 #include "psh.h"
+#include "lru.h"
 
 enum ShaderPrimitiveMode {
-    PRIM_TYPE_NONE,
+    PRIM_TYPE_INVALID,
     PRIM_TYPE_POINTS,
     PRIM_TYPE_LINES,
     PRIM_TYPE_LINE_LOOP,
@@ -76,6 +78,8 @@ typedef struct ShaderState {
     enum MaterialColorSource diffuse_src;
     enum MaterialColorSource specular_src;
 
+    float material_alpha;
+
     bool lighting;
     enum VshLight light[NV2A_MAX_LIGHTS];
 
@@ -95,6 +99,8 @@ typedef struct ShaderState {
     bool point_params_enable;
     float point_size;
     float point_params[8];
+
+    bool smooth_shading;
 } ShaderState;
 
 typedef struct ShaderBinding {
@@ -128,8 +134,30 @@ typedef struct ShaderBinding {
     GLint light_local_attenuation_loc[NV2A_MAX_LIGHTS];
 
     GLint clip_region_loc[8];
+
+    GLint material_alpha_loc;
 } ShaderBinding;
 
-ShaderBinding* generate_shaders(const ShaderState state);
+typedef struct ShaderLruNode {
+    LruNode node;
+    bool cached;
+    void *program;
+    size_t program_size;
+    GLenum program_format;
+    ShaderState state;
+    ShaderBinding *binding;
+    QemuThread *save_thread;
+} ShaderLruNode;
+
+typedef struct PGRAPHState PGRAPHState;
+
+GLenum get_gl_primitive_mode(enum ShaderPolygonMode polygon_mode, enum ShaderPrimitiveMode primitive_mode);
+void update_shader_constant_locations(ShaderBinding *binding, const ShaderState *state);
+ShaderBinding *generate_shaders(const ShaderState *state);
+
+void shader_cache_init(PGRAPHState *pg);
+void shader_write_cache_reload_list(PGRAPHState *pg);
+bool shader_load_from_memory(ShaderLruNode *snode);
+void shader_cache_to_disk(ShaderLruNode *snode);
 
 #endif

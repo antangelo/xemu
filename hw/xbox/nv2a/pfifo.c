@@ -58,7 +58,7 @@ uint64_t pfifo_read(void *opaque, hwaddr addr, unsigned int size)
 
     qemu_mutex_unlock(&d->pfifo.lock);
 
-    nv2a_reg_log_read(NV_PFIFO, addr, r);
+    nv2a_reg_log_read(NV_PFIFO, addr, size, r);
     return r;
 }
 
@@ -66,7 +66,7 @@ void pfifo_write(void *opaque, hwaddr addr, uint64_t val, unsigned int size)
 {
     NV2AState *d = (NV2AState *)opaque;
 
-    nv2a_reg_log_write(NV_PFIFO, addr, val);
+    nv2a_reg_log_write(NV_PFIFO, addr, size, val);
 
     qemu_mutex_lock(&d->pfifo.lock);
 
@@ -452,7 +452,8 @@ static void process_requests(NV2AState *d)
     if (qatomic_read(&d->pgraph.downloads_pending) ||
         qatomic_read(&d->pgraph.download_dirty_surfaces_pending) ||
         qatomic_read(&d->pgraph.gl_sync_pending) ||
-        qatomic_read(&d->pgraph.flush_pending)) {
+        qatomic_read(&d->pgraph.flush_pending) ||
+        qatomic_read(&d->pgraph.shader_cache_writeback_pending)) {
         qemu_mutex_unlock(&d->pfifo.lock);
         qemu_mutex_lock(&d->pgraph.lock);
         if (qatomic_read(&d->pgraph.downloads_pending)) {
@@ -466,6 +467,9 @@ static void process_requests(NV2AState *d)
         }
         if (qatomic_read(&d->pgraph.flush_pending)) {
             pgraph_flush(d);
+        }
+        if (qatomic_read(&d->pgraph.shader_cache_writeback_pending)) {
+            shader_write_cache_reload_list(&d->pgraph);
         }
         qemu_mutex_unlock(&d->pgraph.lock);
         qemu_mutex_lock(&d->pfifo.lock);

@@ -202,6 +202,28 @@ static const char* mask_str[] = {
     ",xyzw" // 1111 xyzw
 };
 
+/* Writes to the oFog register apply the most significant masked component to
+ * `x`. The remaining values are assigned arbitrarily to fit the 4-component
+ * function behavior. */
+static const char* fog_mask_str[] = {
+    ",",
+    ",x",
+    ",x",
+    ",xy",
+    ",x",
+    ",xy",
+    ",xy",
+    ",xyz",
+    ",x",
+    ",xy",
+    ",xy",
+    ",xyz",
+    ",xy",
+    ",xyz",
+    ",xyz",
+    ",xyzw"
+};
+
 /* Note: OpenGL seems to be case-sensitive, and requires upper-case opcodes! */
 static const char* mac_opcode[] = {
     "NOP",
@@ -241,6 +263,8 @@ static bool ilu_force_scalar[] = {
     true,
     false,
 };
+
+#define OUTPUT_REG_FOG 5
 
 static const char* out_reg_name[] = {
     "oPos",
@@ -388,17 +412,21 @@ static MString* decode_opcode(const uint32_t *shader_token,
                               VshOutputMux out_mux,
                               uint32_t mask,
                               const char *opcode,
-                              const char *inputs)
+                              const char *inputs,
+                              MString** suffix)
 {
     MString *ret = mstring_new();
     int reg_num = vsh_get_field(shader_token, FLD_OUT_R);
+    bool use_temp_var = false;
 
     /* Test for paired opcodes (in other words : Are both <> NOP?) */
     if (out_mux == OMUX_MAC
-          &&  vsh_get_field(shader_token, FLD_ILU) != ILU_NOP
-          && reg_num == 1) {
-        /* Ignore paired MAC opcodes that write to R1 */
-        mask = 0;
+          && vsh_get_field(shader_token, FLD_ILU) != ILU_NOP) {
+        use_temp_var = true;
+        if (reg_num == 1) {
+            /* Ignore paired MAC opcodes that write to R1 */
+            mask = 0;
+        }
     } else if (out_mux == OMUX_ILU
                && vsh_get_field(shader_token, FLD_MAC) != MAC_NOP) {
         /* Paired ILU opcodes can only write to R1 */
@@ -414,29 +442,55 @@ static MString* decode_opcode(const uint32_t *shader_token,
         mstring_append(ret, opcode);
         mstring_append(ret, "(");
 
+        bool write_fog_register = false;
         if (vsh_get_field(shader_token, FLD_OUT_ORB) == OUTPUT_C) {
-            /* TODO : Emulate writeable const registers */
+            assert(!"TODO: Emulate writeable const registers");
             mstring_append(ret, "c");
             mstring_append_int(ret,
                 convert_c_register(
                     vsh_get_field(shader_token, FLD_OUT_ADDRESS)));
         } else {
-            mstring_append(ret,
-                out_reg_name[
-                    vsh_get_field(shader_token, FLD_OUT_ADDRESS) & 0xF]);
+            int out_reg = vsh_get_field(shader_token, FLD_OUT_ADDRESS) & 0xF;
+            mstring_append(ret,out_reg_name[out_reg]);
+            write_fog_register = out_reg == OUTPUT_REG_FOG;
         }
-        mstring_append(ret,
-            mask_str[
-                vsh_get_field(shader_token, FLD_OUT_O_MASK)]);
+
+        int write_mask = vsh_get_field(shader_token, FLD_OUT_O_MASK);
+        const char *write_mask_str = write_fog_register ? fog_mask_str[write_mask] : mask_str[write_mask];
+        mstring_append(ret, write_mask_str);
         mstring_append(ret, inputs);
         mstring_append(ret, ");\n");
     }
 
-    if (strcmp(opcode, mac_opcode[MAC_ARL]) == 0) {
-        mstring_append_fmt(ret, "  ARL(A0%s);\n", inputs);
-    } else if (mask > 0) {
-        mstring_append_fmt(ret, "  %s(R%d%s%s);\n",
-                           opcode, reg_num, mask_str[mask], inputs);
+    if (use_temp_var) {
+        assert(suffix && "Temp var flagged on non-MAC instruction");
+        *suffix = mstring_new();
+        if (strcmp(opcode, mac_opcode[MAC_ARL]) == 0) {
+            mstring_append_fmt(ret, "  ARL(_temp_addr%s);\n", inputs);
+            mstring_append(*suffix, "  A0 = _temp_addr;\n");
+        } else if (mask > 0) {
+            mstring_append_fmt(ret, "  %s(_temp_vec%s%s);\n",
+                               opcode, mask_str[mask], inputs);
+
+            // Skip the leading comma
+            const char *mask_components = &mask_str[mask][1];
+            if (mask_components[0]) {
+                mstring_append_fmt(*suffix,
+                                   "  R%d.%s = _temp_vec.%s;\n",
+                                   reg_num,
+                                   mask_components,
+                                   mask_components);
+            } else {
+                mstring_append_fmt(*suffix, "  R%d = _temp_vec;\n", reg_num);
+            }
+        }
+    } else {
+        if (strcmp(opcode, mac_opcode[MAC_ARL]) == 0) {
+            mstring_append_fmt(ret, "  ARL(A0%s);\n", inputs);
+        } else if (mask > 0) {
+            mstring_append_fmt(ret, "  %s(R%d%s%s);\n",
+                               opcode, reg_num, mask_str[mask], inputs);
+        }
     }
 
     return ret;
@@ -463,6 +517,7 @@ static MString* decode_token(const uint32_t *shader_token)
                             (vsh_get_field(shader_token, FLD_C_R_HIGH) << 2)
                                 | vsh_get_field(shader_token, FLD_C_R_LOW));
 
+    MString *mac_suffix = NULL;
     if (mac != MAC_NOP) {
         MString *inputs_mac = mstring_new();
         if (mac_opcode_params[mac].A) {
@@ -495,7 +550,8 @@ static MString* decode_token(const uint32_t *shader_token)
                             OMUX_MAC,
                             vsh_get_field(shader_token, FLD_OUT_MAC_MASK),
                             mac_opcode[mac],
-                            mstring_get_str(inputs_mac));
+                            mstring_get_str(inputs_mac),
+                            &mac_suffix);
         mstring_unref(inputs_mac);
     } else {
         ret = mstring_new();
@@ -511,7 +567,8 @@ static MString* decode_token(const uint32_t *shader_token)
                           OMUX_ILU,
                           vsh_get_field(shader_token, FLD_OUT_ILU_MASK),
                           ilu_opcode[ilu],
-                          mstring_get_str(inputs_c));
+                          mstring_get_str(inputs_c),
+                          NULL);
 
         mstring_append(ret, mstring_get_str(ilu_op));
 
@@ -520,6 +577,11 @@ static MString* decode_token(const uint32_t *shader_token)
     }
 
     mstring_unref(input_c);
+
+    if (mac_suffix) {
+        mstring_append(ret, mstring_get_str(mac_suffix));
+        mstring_unref(mac_suffix);
+    }
 
     return ret;
 }
@@ -542,6 +604,10 @@ static const char* vsh_header =
     "vec4 R11 = vec4(0.0,0.0,0.0,0.0);\n"
     "#define R12 oPos\n" /* R12 is a mirror of oPos */
     "\n"
+
+    /* Used to emulate concurrency of paired MAC+ILU instructions */
+    "vec4 _temp_vec;\n"
+    "int _temp_addr;\n"
 
     /* See:
      * http://msdn.microsoft.com/en-us/library/windows/desktop/bb174703%28v=vs.85%29.aspx
@@ -730,6 +796,7 @@ void vsh_translate(uint16_t version,
 
     bool has_final = false;
     int slot;
+
     for (slot=0; slot < length; slot++) {
         const uint32_t* cur_token = &tokens[slot * VSH_TOKEN_SIZE];
         MString *token_str = decode_token(cur_token);
@@ -754,10 +821,11 @@ void vsh_translate(uint16_t version,
      * around the perspective divide */
     mstring_append(body,
         "  if (oPos.w == 0.0 || isinf(oPos.w)) {\n"
-        "    vtx.inv_w = 1.0;\n"
+        "    vtx_inv_w = 1.0;\n"
         "  } else {\n"
-        "    vtx.inv_w = 1.0 / oPos.w;\n"
+        "    vtx_inv_w = 1.0 / oPos.w;\n"
         "  }\n"
+        "  vtx_inv_w_flat = vtx_inv_w;\n"
     );
 
     mstring_append(body,
@@ -794,4 +862,3 @@ void vsh_translate(uint16_t version,
     );
 
 }
-

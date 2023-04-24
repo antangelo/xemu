@@ -24,62 +24,22 @@
 #ifndef XEMU_SETTINGS_H
 #define XEMU_SETTINGS_H
 
+#include <stdlib.h>
+#include <string.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-enum xemu_settings_keys {
-	XEMU_SETTINGS_SYSTEM_FLASH_PATH,
-	XEMU_SETTINGS_SYSTEM_BOOTROM_PATH,
-	XEMU_SETTINGS_SYSTEM_HDD_PATH,
-	XEMU_SETTINGS_SYSTEM_EEPROM_PATH,
-	XEMU_SETTINGS_SYSTEM_DVD_PATH,
-	XEMU_SETTINGS_SYSTEM_MEMORY,
-	XEMU_SETTINGS_SYSTEM_SHORTANIM,
-	XEMU_SETTINGS_SYSTEM_HARD_FPU,
-	XEMU_SETTINGS_AUDIO_USE_DSP,
-	XEMU_SETTINGS_DISPLAY_SCALE,
-	XEMU_SETTINGS_DISPLAY_UI_SCALE,
-	XEMU_SETTINGS_DISPLAY_RENDER_SCALE,
-	XEMU_SETTINGS_INPUT_CONTROLLER_1_GUID,
-	XEMU_SETTINGS_INPUT_CONTROLLER_2_GUID,
-	XEMU_SETTINGS_INPUT_CONTROLLER_3_GUID,
-	XEMU_SETTINGS_INPUT_CONTROLLER_4_GUID,
-	XEMU_SETTINGS_NETWORK_ENABLED,
-	XEMU_SETTINGS_NETWORK_BACKEND,
-	XEMU_SETTINGS_NETWORK_LOCAL_ADDR,
-	XEMU_SETTINGS_NETWORK_REMOTE_ADDR,
-	XEMU_SETTINGS_NETWORK_PCAP_INTERFACE,
-	XEMU_SETTINGS_MISC_USER_TOKEN,
-	XEMU_SETTINGS_MISC_CHECK_FOR_UPDATE,
-	XEMU_SETTINGS__COUNT,
-	XEMU_SETTINGS_INVALID = -1
-};
+#include "xemu-config.h"
 
-enum DISPLAY_SCALE
-{
-    DISPLAY_SCALE_CENTER,
-    DISPLAY_SCALE_SCALE,
-    DISPLAY_SCALE_WS169,
-    DISPLAY_SCALE_FS43,
-    DISPLAY_SCALE_STRETCH,
-    DISPLAY_SCALE__COUNT,
-    DISPLAY_SCALE_INVALID = -1
-};
-
-enum xemu_net_backend {
-	XEMU_NET_BACKEND_USER,
-	XEMU_NET_BACKEND_SOCKET_UDP,
-	XEMU_NET_BACKEND_PCAP,
-	XEMU_NET_BACKEND__COUNT,
-	XEMU_NET_BACKEND_INVALID = -1
-};
-
-// Determine whether settings were loaded or not
-int xemu_settings_did_fail_to_load(void);
+extern struct config g_config;
 
 // Override the default config file paths
 void xemu_settings_set_path(const char *path);
+
+// Get the path of the base settings dir
+const char *xemu_settings_get_base_path(void);
 
 // Get path of the config file on disk
 const char *xemu_settings_get_path(void);
@@ -87,21 +47,23 @@ const char *xemu_settings_get_path(void);
 // Get path of the default generated eeprom file on disk
 const char *xemu_settings_get_default_eeprom_path(void);
 
-// Load config file from disk, or load defaults
-void xemu_settings_load(void);
+// Get error message on failure to parse settings
+const char *xemu_settings_get_error_message(void);
+
+// Load config file from disk, or load defaults. Return true on success, false if an error occured.
+bool xemu_settings_load(void);
 
 // Save config file to disk
-int xemu_settings_save(void);
+void xemu_settings_save(void);
 
-// Config item setters/getters
-int xemu_settings_set_string(enum xemu_settings_keys key, const char *str);
-int xemu_settings_get_string(enum xemu_settings_keys key, const char **str);
-int xemu_settings_set_int(enum xemu_settings_keys key, int val);
-int xemu_settings_get_int(enum xemu_settings_keys key, int *val);
-int xemu_settings_set_bool(enum xemu_settings_keys key, int val);
-int xemu_settings_get_bool(enum xemu_settings_keys key, int *val);
-int xemu_settings_set_enum(enum xemu_settings_keys key, int val);
-int xemu_settings_get_enum(enum xemu_settings_keys key, int *val);
+static inline void xemu_settings_set_string(const char **str, const char *new_str)
+{
+	free((char*)*str);
+	*str = strdup(new_str);
+}
+
+void add_net_nat_forward_ports(int host, int guest, CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL protocol);
+void remove_net_nat_forward_ports(unsigned int index);
 
 #ifdef __cplusplus
 }

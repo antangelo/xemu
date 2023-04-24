@@ -1,7 +1,7 @@
 project('qemu', ['c'], meson_version: '>=0.55.0',
-        default_options: ['warning_level=1', 'c_std=gnu11', 'cpp_std=gnu++11', 'b_colorout=auto'] +
+        default_options: ['warning_level=1', 'c_std=gnu11', 'cpp_std=c++17', 'b_colorout=auto'] +
                          (meson.version().version_compare('>=0.56.0') ? [ 'b_staticpic=false' ] : []),
-        version: run_command('head', meson.source_root() / 'VERSION').stdout().strip())
+        version: run_command('head', meson.source_root() / 'QEMU_VERSION').stdout().strip())
 
 not_found = dependency('', required: false)
 if meson.version().version_compare('>=0.56.0')
@@ -469,9 +469,9 @@ if 'CONFIG_SPICE_PROTOCOL' in config_host
 endif
 rt = cc.find_library('rt', required: false)
 libdl = not_found
-if 'CONFIG_PLUGIN' in config_host
+if 'CONFIG_PLUGIN' in config_host or get_option('renderdoc').enabled()
   libdl = cc.find_library('dl', required: false)
-  if not cc.has_function('dlopen', dependencies: libdl)
+  if targetos != 'windows' and not cc.has_function('dlopen', dependencies: libdl)
     error('dlopen not found')
   endif
 endif
@@ -836,6 +836,14 @@ if 'CONFIG_OPENGL' in config_host
   opengl = declare_dependency(compile_args: config_host['OPENGL_CFLAGS'].split(),
                               link_args: config_host['OPENGL_LIBS'].split())
 endif
+
+tomllib = static_library('tomlpp', sources: files('toml.cpp'),
+                         include_directories: 'tomlplusplus/include')
+toml = declare_dependency(compile_args: ['-DTOML_HEADER_ONLY=0'],
+                          include_directories: 'tomlplusplus/include',
+                          link_with: tomllib)
+
+genconfig = declare_dependency(include_directories: 'genconfig')
 
 xemu_gtk = declare_dependency(compile_args: config_host['XEMU_GTK_CFLAGS'].split(),
                               link_args: config_host['XEMU_GTK_LIBS'].split())
@@ -1224,6 +1232,15 @@ endif
 have_host_block_device = (targetos != 'darwin' or
     cc.has_header('IOKit/storage/IOMedia.h'))
 
+have_renderdoc = false
+if have_system and get_option('renderdoc').enabled()
+  if targetos == 'linux' and not libdl.found()
+    error('renderdoc required, but libdl was not found')
+  else
+    have_renderdoc = true
+  endif
+endif
+
 #################
 # config-host.h #
 #################
@@ -1324,6 +1341,7 @@ config_host_data.set('QEMU_VERSION_MINOR', meson.project_version().split('.')[1]
 config_host_data.set('QEMU_VERSION_MICRO', meson.project_version().split('.')[2])
 
 config_host_data.set('HAVE_HOST_BLOCK_DEVICE', have_host_block_device)
+config_host_data.set('CONFIG_RENDERDOC', have_renderdoc)
 
 # has_header
 config_host_data.set('CONFIG_EPOLL', cc.has_header('sys/epoll.h'))
@@ -2042,8 +2060,20 @@ qemu_version = custom_target('qemu-version.h',
                              build_by_default: true,
                              build_always_stale: true)
 
+genconfig_cmd = [
+  python, files('genconfig/gen_config.py'),
+   meson.source_root() / 'config_spec.yml', 'xemu-config.h'
+]
+
+xemu_config = custom_target('xemu-config.h',
+                            output: 'xemu-config.h',
+                            input: [ files('config_spec.yml') ],
+                            command: genconfig_cmd,
+                            depend_files: files('config_spec.yml'))
+
 genh += qemu_version
 genh += xemu_version
+genh += xemu_config
 
 hxdep = []
 hx_headers = [
@@ -2186,6 +2216,9 @@ if have_system
     'softmmu',
     'ui',
     'hw/remote',
+    'hw/xbox/nv2a',
+    'hw/xbox/mcpx',
+    'hw/xbox',
   ]
 endif
 if have_system or have_user
@@ -2235,6 +2268,7 @@ util_ss.add_all(trace_ss)
 util_ss = util_ss.apply(config_all, strict: false)
 libqemuutil = static_library('qemuutil',
                              sources: util_ss.sources() + stub_ss.sources() + genh,
+                             include_directories: 'util/xxHash',
                              dependencies: [util_ss.dependencies(), libm, threads, glib, socket, malloc, pixman])
 qemuutil = declare_dependency(link_with: libqemuutil,
                               sources: genh + version_res)
@@ -2282,6 +2316,9 @@ endif
 specific_ss.add(files('xemu-xbe.c', 'xemu-version.c'))
 
 common_ss.add(files('cpus-common.c'))
+
+common_ss.add(toml)
+common_ss.add(genconfig)
 
 subdir('softmmu')
 

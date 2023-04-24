@@ -33,6 +33,8 @@
 #include "qemu/config-file.h"
 #include "net/net.h"
 #include "net/hub.h"
+#include "net/slirp.h"
+#include <libslirp.h>
 #if defined(_WIN32)
 #include <pcap/pcap.h>
 #endif
@@ -40,6 +42,8 @@
 
 static const char *id = "xemu-netdev";
 static const char *id_hubport = "xemu-netdev-hubport";
+
+void *slirp_get_state_from_netdev(const char *id);
 
 void xemu_net_enable(void)
 {
@@ -50,36 +54,28 @@ void xemu_net_enable(void)
         return;
     }
 
-    int backend;
-    const char *local_addr, *remote_addr;
-    xemu_settings_get_enum(XEMU_SETTINGS_NETWORK_BACKEND, &backend);
-    xemu_settings_get_string(XEMU_SETTINGS_NETWORK_REMOTE_ADDR, &remote_addr);
-    xemu_settings_get_string(XEMU_SETTINGS_NETWORK_LOCAL_ADDR, &local_addr);
-
     // Create the netdev
     QDict *qdict;
-    if (backend == XEMU_NET_BACKEND_USER) {
+    if (g_config.net.backend == CONFIG_NET_BACKEND_NAT) {
         qdict = qdict_new();
         qdict_put_str(qdict, "id",   id);
         qdict_put_str(qdict, "type", "user");
-    } else if (backend == XEMU_NET_BACKEND_SOCKET_UDP) {
+    } else if (g_config.net.backend == CONFIG_NET_BACKEND_UDP) {
         qdict = qdict_new();
         qdict_put_str(qdict, "id",        id);
         qdict_put_str(qdict, "type",      "socket");
-        qdict_put_str(qdict, "udp",       remote_addr);
-        qdict_put_str(qdict, "localaddr", local_addr);
-    } else if (backend == XEMU_NET_BACKEND_PCAP) {
+        qdict_put_str(qdict, "udp",       g_config.net.udp.remote_addr);
+        qdict_put_str(qdict, "localaddr", g_config.net.udp.bind_addr);
+    } else if (g_config.net.backend == CONFIG_NET_BACKEND_PCAP) {
 #if defined(_WIN32)
         if (pcap_load_library()) {
             return;
         }
 #endif
-        const char *iface;
-        xemu_settings_get_string(XEMU_SETTINGS_NETWORK_PCAP_INTERFACE, &iface);
         qdict = qdict_new();
         qdict_put_str(qdict, "id",        id);
         qdict_put_str(qdict, "type",      "pcap");
-        qdict_put_str(qdict, "ifname",    iface);
+        qdict_put_str(qdict, "ifname",    g_config.net.pcap.netif);
     } else {
         // Unsupported backend type
         return;
@@ -110,7 +106,41 @@ void xemu_net_enable(void)
         // error_propagate(errp, local_err);
         xemu_queue_error_message(error_get_pretty(local_err));
         error_report_err(local_err);
+        return;
     }
+
+    if (g_config.net.backend == CONFIG_NET_BACKEND_NAT) {
+        void *s = slirp_get_state_from_netdev(id);
+        assert(s != NULL);
+
+        struct in_addr host_addr = { .s_addr = INADDR_ANY };
+        struct in_addr guest_addr = { .s_addr = 0 };
+        inet_aton("10.0.2.15", &guest_addr);
+
+        for (int i = 0; i < g_config.net.nat.forward_ports_count; i++) {
+            bool is_udp = g_config.net.nat.forward_ports[i].protocol ==
+                          CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL_UDP;
+            int host_port = g_config.net.nat.forward_ports[i].host;
+            int guest_port = g_config.net.nat.forward_ports[i].guest;
+
+            if (slirp_add_hostfwd(s, is_udp, host_addr, host_port, guest_addr,
+                                  guest_port) < 0) {
+                error_setg(&local_err,
+                           "Could not set host forwarding rule "
+                           "%d -> %d (%s)\n",
+                           host_port, guest_port, is_udp ? "udp" : "tcp");
+                xemu_queue_error_message(error_get_pretty(local_err));
+                break;
+            }
+
+        }
+    }
+
+    if (local_err) {
+        xemu_net_disable();
+    }
+
+    g_config.net.enable = true;
 }
 
 static void remove_netdev(const char *name)
@@ -130,20 +160,34 @@ static void remove_netdev(const char *name)
         // error_setg(errp, "Device '%s' is not a netdev", name);
         return;
     }
-
     qemu_opts_del(opts);
     qemu_del_net_client(nc);
 }
 
 void xemu_net_disable(void)
 {
+    if (g_config.net.backend == CONFIG_NET_BACKEND_NAT) {
+        void *s = slirp_get_state_from_netdev(id);
+        assert(s != NULL);
+        struct in_addr host_addr = { .s_addr = INADDR_ANY };
+        for (int i = 0; i < g_config.net.nat.forward_ports_count; i++) {
+            slirp_remove_hostfwd(s,
+                                 g_config.net.nat.forward_ports[i].protocol ==
+                                     CONFIG_NET_NAT_FORWARD_PORTS_PROTOCOL_UDP,
+                                 host_addr,
+                                 g_config.net.nat.forward_ports[i].host);
+        }
+    }
+
     remove_netdev(id);
     remove_netdev(id_hubport);
+    g_config.net.enable = false;
 }
 
 int xemu_net_is_enabled(void)
 {
     NetClientState *nc;
     nc = qemu_find_netdev(id);
-    return (nc != NULL);
+    g_config.net.enable = (nc != NULL);
+    return g_config.net.enable;
 }
