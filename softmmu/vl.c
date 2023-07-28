@@ -2805,7 +2805,19 @@ void qemu_init(int argc, char **argv)
     }
 
     const char *flashrom_path = g_config.sys.files.flashrom_path;
-    if (g_config.general.show_welcome) {
+    const char *flashrom_override_path = NULL;
+    for (int i = 0; i < argc; ++i) {
+        if (argv[i] && strcmp(argv[i], "-bios") == 0) {
+            if (i < argc - 1) {
+                flashrom_override_path = argv[i + 1];
+            }
+            break;
+        }
+    }
+
+    if (flashrom_override_path) {
+        assert(!xemu_check_file(flashrom_override_path));
+    } if (g_config.general.show_welcome) {
         // Don't display an error if this is the first boot. Give user a chance
         // to configure the path.
         autostart = 0;
