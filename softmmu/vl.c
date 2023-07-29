@@ -2832,7 +2832,7 @@ void qemu_init(int argc, char **argv)
     }
 
     int mem = ((int)g_config.sys.mem_limit + 1) * 64;
-    fake_argv[fake_argc++] = strdup("-m");
+        fake_argv[fake_argc++] = strdup("-m");
     fake_argv[fake_argc++] = g_strdup_printf("%d", mem);
 
     const char *hdd_path = g_config.sys.files.hdd_path;
