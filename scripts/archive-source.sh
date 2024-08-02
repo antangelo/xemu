@@ -30,6 +30,7 @@ submodules="dtc meson ui/keycodemapdb"
 submodules="$submodules tests/fp/berkeley-softfloat-3 tests/fp/berkeley-testfloat-3"
 submodules="$submodules ui/thirdparty/imgui ui/thirdparty/implot ui/thirdparty/httplib util/xxHash tomlplusplus genconfig" # xemu extras
 submodules="$submodules hw/xbox/nv2a/thirdparty/nv2a_vsh_cpu"
+submodules="$submodules thirdparty/backward-cpp"
 sub_deinit=""
 
 function cleanup() {

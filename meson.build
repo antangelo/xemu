@@ -169,6 +169,16 @@ if 'dtrace' in get_option('trace_backends')
   endif
 endif
 
+libunwind = dependency('libunwind', required : false, kwargs : static_kwargs)
+if libunwind.found()
+  add_global_arguments('-DBACKWARD_HAS_LIBUNWIND=1', language : 'cpp')
+endif
+
+libdw = dependency('libdw', required : false, kwargs: static_kwargs)
+if libdw.found()
+  add_global_arguments('-DBACKWARD_HAS_DW=1', language : 'cpp')
+endif
+
 if get_option('iasl') == ''
   iasl = find_program('iasl', required: false)
 else
@@ -192,6 +202,8 @@ endif
 qemu_ldflags += cc.get_supported_link_arguments('-Wl,-z,relro', '-Wl,-z,now')
 
 if targetos == 'windows'
+  # These are required for backward-cpp to produce a stack trace
+  qemu_ldflags += ['-ldbghelp', '-lucrt']
   qemu_ldflags += cc.get_supported_link_arguments('-Wl,--no-seh', '-Wl,--nxcompat')
   # Disable ASLR for debug builds to allow debugging with gdb
   if get_option('optimization') == '0'
@@ -3111,6 +3123,7 @@ subdir('hw')
 subdir('gdbstub')
 subdir('data')
 subdir('winpcap-loader')
+subdir('thirdparty')
 
 
 if enable_modules

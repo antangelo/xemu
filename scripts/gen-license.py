@@ -231,6 +231,12 @@ Lib('nv2a_vsh_cpu', 'https://github.com/abaire/nv2a_vsh_cpu',
 	submodule=Submodule('hw/xbox/nv2a/thirdparty/nv2a_vsh_cpu')
 	),
 
+Lib('backward-cpp', 'https://github.com/bombela/backward-cpp',
+    mit, 'https://raw.githubusercontent.com/bombela/backward-cpp/master/LICENSE.txt',
+    ships_static=all_platforms,
+    submodule=Submodule('thirdparty/backward-cpp')
+    ),
+
 #
 # Data files included with xemu
 #
